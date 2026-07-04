@@ -11,6 +11,7 @@ import {
   Trash2, 
   Download, 
   Plus,
+  Edit,
   Clock,
   User,
   Scale,
@@ -41,6 +42,10 @@ interface Calculation {
   totalPrice: number;
   challanNo: number;
   createdBy: string;
+  deductedWeight?: number;
+  deductionPercentage?: number;
+  isMinusCalculated?: boolean;
+  targetMonPrice?: number;
 }
 
 interface Note {
@@ -65,12 +70,19 @@ interface ReceiptVisibility {
   signatures: boolean;
 }
 
-// --- Multi-language Translation dictionary ---
+// --- Bengali numeral and text utility ---
+const toBengaliDigits = (num: number | string): string => {
+  const englishToBengaliMap: Record<string, string> = {
+    '0': '০', '1': '১', '2': '২', '3': '৩', '4': '৪',
+    '5': '৫', '6': '৬', '7': '৭', '8': '৮', '9': '৯'
+  };
+  return num.toString().replace(/[0-9]/g, char => englishToBengaliMap[char] || char);
+};
 const translations = {
   bn: {
     title: "এ. এস এন্টারপ্রাইজ",
     subtitle: "খড়ি সরবরাহকারী ও পাইকারি বিক্রেতা",
-    proprietor: "প্রোপ্রাইটর: আবু সালেহ | মোবাইল: 01766761877",
+    proprietor: "প্রোপ্রাইটর: আবু সালেহ | মোবাইল: ০১৭৬৬৭৬১৮৭৭",
     home: "হোম",
     note: "নোট",
     history: "হিসাব খাতা",
@@ -93,21 +105,21 @@ const translations = {
     alertInputsMust: "দয়া করে বিক্রেতার নাম, ওজন (KG) এবং রেট পূরণ করুন!",
     alertChallanWrong: "চালান নম্বরটি ক্রমিক অনুসারী নয়! সম্ভাব্য সঠিক নম্বর: {suggested}। তবুও সেভ করতে চাইলে মিস্টেক টিক দিন।",
     notCalculated: "চালান হিসাব করতে প্রয়োজনীয় ইনপুট দিন",
-    challanNum: "চালান নং (Challan)",
-    sellerName: "বিক্রেতার নাম (Seller Name)",
-    totalWeight: "মোট ওজন (Total Weight)",
-    monSystem: "মন সিস্টেম (Mon System)",
-    ratePerMon: "নির্ধারিত দর (Rate per Mon)",
-    calculate: "হিসাব করুন (Calculate)",
+    challanNum: "চালান নং",
+    sellerName: "বিক্রেতার নাম",
+    totalWeight: "মোট ওজন (কেজি)",
+    monSystem: "মন সিস্টেম",
+    ratePerMon: "নির্ধারিত দর",
+    calculate: "হিসাব করুন",
     challanSuggested: "চালান নং মেলেনি! সঠিক ক্রম:",
     serialBypass: "সিরিয়াল মিস্টেক স্বীকার করে মেলান",
     conversionRes: "রূপান্তরিত হিসাব:",
     totalPayable: "সর্বমোট পরিশোধযোগ্য বিল",
-    sizeWarning: "বিশেষ দ্রষ্টব্য (Warning Disclaimer): এখানে কোনো চিকন খড়ি নেওয়া হয় না। খড়ির সাইজ সর্বনিম্ন বের ৬\" ইঞ্চি থেকে সর্বোচ্চ ৬৫ ইঞ্চি পর্যন্ত ও লম্বায় সর্বনিম্ন ৩০ ইঞ্চি থেকে ৬০ ইঞ্চি পর্যন্ত খড়ি নেওয়া হয়।",
-    signatureAdmin: "অফিস সহকারী সাক্ষর",
-    signatureProp: "প্রোপ্রাইটর সাক্ষর (Abu Saleh)",
-    excelExport: "এক্সেল শীট ডাউনলোড (Excel CSV)",
-    pdfPrint: "রিপোর্ট প্রিন্ট ও পিডিএফ (PDF Report)",
+    sizeWarning: "বিশেষ দ্রষ্টব্য: শিমুল, জিকা, আমরা, ডুমুর, শেওড়া, জিগনাই কম চলে এবং ১১০ টাকা রেট।",
+    signatureAdmin: "হিসাব রক্ষক স্বাক্ষর",
+    signatureProp: "প্রোপ্রাইটর স্বাক্ষর (আবু সালেহ)",
+    excelExport: "এক্সেল শীট ডাউনলোড",
+    pdfPrint: "রিপোর্ট প্রিন্ট ও পিডিএফ",
     calculatorSectionTitle: "খড়ির আধুনিক হিসাব ক্যালকুলেটর",
     calculationLogs: "হিসাবের খাতা রেকর্ডসমূহ",
     settingsTitle: "অ্যাপের সেটিংস ও প্রদর্শন অপশন",
@@ -118,8 +130,8 @@ const translations = {
     guestUser: "সাধারণ মেম্বার",
     loginText: "লগইন",
     registerText: "নতুন রেজিস্টার",
-    usernameText: "ইউজারনেম দিন (Username)",
-    passwordText: "পাসওয়ার্ড দিন (Password)",
+    usernameText: "ইউজারনেম দিন",
+    passwordText: "পাসওয়ার্ড দিন",
     noLoginWarning: "অনুগ্রহ করে হিসাব সংরক্ষণের জন্য ইউজার প্যানেল থেকে নাম দিন!",
     allUsers: "সকল অপারেটর",
     recordCount: "টি রেকর্ড খুঁজে পাওয়া গেছে",
@@ -270,6 +282,10 @@ export default function App() {
     if (confirm(confirmation)) {
       setCalculations(calculations.filter(c => c.id !== id));
     }
+  };
+
+  const editCalculation = (updated: Calculation) => {
+    setCalculations(calculations.map(c => c.id === updated.id ? updated : c));
   };
 
   const addNote = (note: Note) => {
@@ -650,6 +666,7 @@ export default function App() {
               <HistorySection 
                 calculations={filteredCalculations} 
                 onDelete={deleteCalculation} 
+                onEdit={editCalculation}
                 t={t}
                 language={language}
                 allCalculations={calculations} // to calculate list of users for filter
@@ -975,7 +992,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     sellerName: '',
     totalKg: '',
     ratePerMon: '',
-    monType: 40 as MonType,
+    monType: 41 as MonType,
     challanNo: expectedNextChallan.toString()
   });
 
@@ -983,6 +1000,19 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
 
   // Preview result is only filled out upon clicking "Calculate"
   const [previewResult, setPreviewResult] = useState<any | null>(null);
+
+  // Minus Calculate states
+  const [isMinusMode, setIsMinusMode] = useState(false);
+  const [minusFormData, setMinusFormData] = useState({
+    sellerName: '',
+    totalKg: '',
+    minusWeight: '',
+    targetMonPrice: '',
+    monType: 41 as MonType,
+    ratePerMon: '',
+    challanNo: expectedNextChallan.toString(),
+    activeInput: 'weight' as 'weight' | 'targetPrice'
+  });
 
   // Sync expected Challan number if input is currently empty
   useEffect(() => {
@@ -994,6 +1024,72 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     });
   }, [expectedNextChallan]);
 
+  // Sync expected Challan number for minus calculate if input is currently empty
+  useEffect(() => {
+    setMinusFormData(prev => {
+      if (!prev.challanNo || prev.challanNo === '') {
+        return { ...prev, challanNo: expectedNextChallan.toString() };
+      }
+      return prev;
+    });
+  }, [expectedNextChallan]);
+
+  // Real-time calculation logic for minus calculation
+  const minusCalcResult = useMemo(() => {
+    const totalKg = parseFloat(minusFormData.totalKg) || 0;
+    const ratePerMon = parseFloat(minusFormData.ratePerMon) || 0;
+    const monType = minusFormData.monType;
+    
+    let minusWeight = 0;
+    let targetMonPrice = 0;
+    let deductionPercentage = 0;
+    let netWeight = totalKg;
+    let netMon = 0;
+    let effectivePrice = ratePerMon;
+    let totalPrice = 0;
+
+    if (minusFormData.activeInput === 'weight') {
+      minusWeight = parseFloat(minusFormData.minusWeight) || 0;
+      netWeight = Math.max(0, totalKg - minusWeight);
+      if (totalKg > 0) {
+        deductionPercentage = (minusWeight / totalKg) * 100;
+      }
+      netMon = netWeight / monType;
+      totalPrice = netMon * ratePerMon;
+      if (totalKg > 0) {
+        effectivePrice = ratePerMon * (netWeight / totalKg);
+      }
+    } else {
+      targetMonPrice = parseFloat(minusFormData.targetMonPrice) || 0;
+      if (ratePerMon > 0) {
+        const ratio = targetMonPrice / ratePerMon;
+        netWeight = totalKg * ratio;
+        minusWeight = Math.max(0, totalKg - netWeight);
+        if (totalKg > 0) {
+          deductionPercentage = (minusWeight / totalKg) * 100;
+        }
+        netMon = netWeight / monType;
+        totalPrice = netMon * ratePerMon;
+        effectivePrice = targetMonPrice;
+      }
+    }
+
+    const monCount = Math.floor(netMon);
+    const extraKg = parseFloat((netWeight % monType).toFixed(2));
+
+    return {
+      minusWeight,
+      targetMonPrice,
+      deductionPercentage,
+      netWeight,
+      netMon,
+      effectivePrice,
+      totalPrice,
+      monCount,
+      extraKg
+    };
+  }, [minusFormData]);
+
   // Live calculation based on raw inputs, used immediately on preview
   const currentCalcResult = useMemo(() => {
     const kg = parseFloat(formData.totalKg) || 0;
@@ -1001,7 +1097,6 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     
     const monCount = Math.floor(kg / formData.monType);
     const extraKg = kg % formData.monType;
-    
     const totalMonDecimal = kg / formData.monType;
     const price = totalMonDecimal * rate;
     
@@ -1011,7 +1106,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
   const enteredChallanNum = parseInt(formData.challanNo) || 0;
   const showChallanWarning = formData.challanNo !== '' && enteredChallanNum !== expectedNextChallan;
 
-  // On Calculate: Populate the preview result state
+  // On Calculate (হিসাব করুন): Calculate AND auto-save calculation immediately to the ledger!
   const handleCalculate = () => {
     if (!formData.challanNo) {
       alert(t.alertChallanMust);
@@ -1031,7 +1126,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       return;
     }
 
-    setPreviewResult({
+    const calculated = {
       sellerName: formData.sellerName,
       totalKg: parseFloat(formData.totalKg),
       challanNo: enteredChallanNum,
@@ -1039,81 +1134,174 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       monCount: currentCalcResult.monCount,
       extraKg: currentCalcResult.extraKg,
       totalMonDecimal: currentCalcResult.totalMonDecimal,
-      price: currentCalcResult.price
-    });
-  };
+      price: currentCalcResult.price,
+      ratePerMon: parseFloat(formData.ratePerMon)
+    };
 
-  // Perform permanent save explicitly clicking "Save to Software" button
-  const handleSaveToDatabase = () => {
-    if (!previewResult) return;
-
-    // Check for exact duplicates matching name & weight
+    // Check duplicate
     const isDuplicate = calculations.some(c => 
-      c.sellerName.trim().toLowerCase() === previewResult.sellerName.trim().toLowerCase() && 
-      c.totalKg === previewResult.totalKg
+      c.sellerName.trim().toLowerCase() === calculated.sellerName.trim().toLowerCase() && 
+      c.totalKg === calculated.totalKg
     );
 
     if (isDuplicate) {
       const promptText = language === 'bn' 
-        ? `এগেইন সেইভ?\n\nএকই বিক্রেতার নাম ও পন্যের ওজন (${previewResult.totalKg} KG) বিশিষ্ট হিসাব ইতিমধ্যে সেভ করা হয়েছে!` 
-        : `Save Duplicate Record?\n\nA calculation listing ${previewResult.sellerName} at ${previewResult.totalKg} KG already exists. Would you like to save this duplicate record?`;
+        ? `এগেইন সেইভ?\n\nএকই বিক্রেতার নাম ও পন্যের ওজন (${calculated.totalKg} KG) বিশিষ্ট হিসাব ইতিমধ্যে সেভ করা হয়েছে!` 
+        : `Save Duplicate Record?\n\nA calculation listing ${calculated.sellerName} at ${calculated.totalKg} KG already exists. Would you like to save this duplicate record?`;
       
       if (!confirm(promptText)) {
         return;
       }
     }
 
+    // Auto-save to DB!
     onSave({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
-      sellerName: previewResult.sellerName,
-      totalKg: previewResult.totalKg,
-      ratePerMon: parseFloat(formData.ratePerMon),
-      monType: previewResult.monType,
-      totalMon: previewResult.totalMonDecimal,
-      totalPrice: previewResult.price,
-      challanNo: previewResult.challanNo
+      sellerName: calculated.sellerName,
+      totalKg: calculated.totalKg,
+      ratePerMon: calculated.ratePerMon,
+      monType: calculated.monType,
+      totalMon: calculated.totalMonDecimal,
+      totalPrice: calculated.price,
+      challanNo: calculated.challanNo
     });
 
-    const successMsg = language === 'bn' ? 'হিসাবটি সফলভাবে সফটওয়্যারে সেভ করা হয়েছে!' : 'Calculation successfully persisted in ledger!';
+    setPreviewResult(calculated);
+
+    const successMsg = language === 'bn' 
+      ? 'হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
+      : 'Calculation finalized and automatically saved to database!';
     alert(successMsg);
 
-    // Increment challan by 1 for next use and reset forms
-    const userSavedChallan = previewResult.challanNo;
+    // Increment challan for next row & reset form
     setFormData({
       sellerName: '',
       totalKg: '',
       ratePerMon: '',
       monType: formData.monType,
-      challanNo: (userSavedChallan + 1).toString()
+      challanNo: (calculated.challanNo + 1).toString()
     });
-    setPreviewResult(null);
     setAllowSerialBypass(false);
   };
 
-  // Strictly formatted Bengali copy layout according to user specifications:
-  // "বিক্রেতার নাম: মোন্নাফ
-  // ওজন : 12 মোন 8 কেজী
-  // রেট : 157 টাকা
-  // মোট মূল্য: 1915 টাকা"
+  const handleSaveMinusCalculation = () => {
+    if (!minusFormData.challanNo) {
+      alert(t.alertChallanMust);
+      return;
+    }
+
+    if (!minusFormData.sellerName || !minusFormData.totalKg || !minusFormData.ratePerMon) {
+      alert(t.alertInputsMust);
+      return;
+    }
+
+    const enteredChallanNum = parseInt(minusFormData.challanNo) || 0;
+    const isDuplicate = calculations.some(c => 
+      c.sellerName.trim().toLowerCase() === minusFormData.sellerName.trim().toLowerCase() && 
+      c.totalKg === parseFloat(minusFormData.totalKg)
+    );
+
+    if (isDuplicate) {
+      const promptText = language === 'bn' 
+        ? `এগেইন সেইভ?\n\nএকই বিক্রেতার নাম ও পন্যের ওজন (${minusFormData.totalKg} KG) বিশিষ্ট হিসাব ইতিমধ্যে সেভ করা হয়েছে!` 
+        : `Save Duplicate Record?\n\nA calculation listing ${minusFormData.sellerName} at ${minusFormData.totalKg} KG already exists. Would you like to save this duplicate record?`;
+      
+      if (!confirm(promptText)) {
+        return;
+      }
+    }
+
+    const calculated = {
+      sellerName: minusFormData.sellerName,
+      totalKg: parseFloat(minusFormData.totalKg),
+      challanNo: enteredChallanNum,
+      monType: minusFormData.monType,
+      monCount: minusCalcResult.monCount,
+      extraKg: minusCalcResult.extraKg,
+      totalMonDecimal: minusCalcResult.netMon,
+      price: minusCalcResult.totalPrice,
+      ratePerMon: parseFloat(minusFormData.ratePerMon),
+      deductedWeight: minusCalcResult.minusWeight,
+      deductionPercentage: minusCalcResult.deductionPercentage,
+      isMinusCalculated: true,
+      targetMonPrice: minusFormData.activeInput === 'targetPrice' ? parseFloat(minusFormData.targetMonPrice) : undefined
+    };
+
+    // Auto-save to DB!
+    onSave({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: Date.now(),
+      sellerName: calculated.sellerName,
+      totalKg: calculated.totalKg,
+      ratePerMon: calculated.ratePerMon,
+      monType: calculated.monType,
+      totalMon: calculated.totalMonDecimal,
+      totalPrice: calculated.price,
+      challanNo: calculated.challanNo,
+      deductedWeight: calculated.deductedWeight,
+      deductionPercentage: calculated.deductionPercentage,
+      isMinusCalculated: true,
+      targetMonPrice: calculated.targetMonPrice
+    });
+
+    setPreviewResult(calculated);
+
+    const successMsg = language === 'bn' 
+      ? 'মাইনাস হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
+      : 'Minus calculation finalized and automatically saved to database!';
+    alert(successMsg);
+
+    // Increment challan for next row & reset form
+    setMinusFormData({
+      sellerName: '',
+      totalKg: '',
+      minusWeight: '',
+      targetMonPrice: '',
+      monType: minusFormData.monType,
+      ratePerMon: '',
+      challanNo: (calculated.challanNo + 1).toString(),
+      activeInput: 'weight'
+    });
+  };
+
   const handleCopy = () => {
     if (!previewResult) {
       alert(language === 'bn' ? 'কপি করার জন্য প্রথমে হিসাব সম্পন্ন করুন!' : 'Perform calculation first to copy text!');
       return;
     }
 
-    // Always Bengali formatting for copied clipboard text according to strict request!
-    // "কপি করলে অবশ্যই এই চারটি বিষয় কপি হবে বাংলায়।"
     const formattedPrice = Math.round(previewResult.price);
-    const textToCopy = `
-বিক্রেতার নাম: ${previewResult.sellerName}
-ওজন : ${previewResult.monCount} মোন ${previewResult.extraKg} কেজী
-রেট : ${parseFloat(formData.ratePerMon)} টাকা
-মোট মূল্য: ${formattedPrice} টাকা
-    `.trim();
-    
+    let textToCopy = '';
+
+    if (previewResult.isMinusCalculated) {
+      textToCopy = `
+বিক্রেতার নাম:  ${previewResult.sellerName}
+
+মোট ওজন:  ${toBengaliDigits(previewResult.totalKg)} কেজী
+
+ওজন কর্তন: -${toBengaliDigits(previewResult.deductedWeight.toFixed(1))} কেজী (${toBengaliDigits(previewResult.deductionPercentage.toFixed(1))}%)
+
+নিট ওজন :  ${toBengaliDigits(previewResult.monCount)} মোন ${toBengaliDigits(previewResult.extraKg)} কেজী
+
+রেট : ${toBengaliDigits(previewResult.ratePerMon)} টাকা
+
+মোট মূল্য: ${toBengaliDigits(formattedPrice)} টাকা
+`.trim();
+    } else {
+      textToCopy = `
+বিক্রেতার নাম:  ${previewResult.sellerName}
+
+ওজন :  ${toBengaliDigits(previewResult.monCount)} মোন ${toBengaliDigits(previewResult.extraKg)} কেজী
+
+রেট : ${toBengaliDigits(previewResult.ratePerMon)} টাকা
+
+মোট মূল্য: ${toBengaliDigits(formattedPrice)} টাকা
+`.trim();
+    }
+
     navigator.clipboard.writeText(textToCopy);
-    alert(language === 'bn' ? '৪টি বিষয় সফলভাবে বাংলায় কপি করা হয়েছে!' : 'The specified 4 elements have been copied strictly in Bengali format!');
+    alert(language === 'bn' ? 'হিসাবটি সফলভাবে বাংলায় কপি করা হয়েছে!' : 'The calculated elements have been copied successfully!');
   };
 
   const handleSaveImage = () => {
@@ -1121,9 +1309,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
 
     const canvas = document.createElement('canvas');
     canvas.width = 600;
-    canvas.height = 760;
+    canvas.height = 800;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    const isBn = language === 'bn';
 
     // Background color
     ctx.fillStyle = '#ffffff';
@@ -1147,16 +1337,17 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     // Headers
     ctx.fillStyle = '#000000';
     ctx.textAlign = 'center';
-    ctx.font = fontStr(24, 'bold');
-    ctx.fillText('A. S Enterprise (এ. এস এন্টারপ্রাইজ)', canvas.width / 2, 65);
+    ctx.font = fontStr(28, 'bold');
+    ctx.fillText(isBn ? 'এ. এস এন্টারপ্রাইজ' : 'A. S Enterprise', canvas.width / 2, 65);
 
-    ctx.font = fontStr(12, 'bold');
+    ctx.font = fontStr(15, 'bold');
     ctx.fillStyle = '#4b5563';
-    ctx.fillText('খড়ি সরবরাহকারী ও পাইকারি বিক্রেতা', canvas.width / 2, 90);
+    ctx.fillText(isBn ? 'খড়ি সরবরাহকারী ও পাইকারি বিক্রেতা' : 'Firewood Supplier & Wholesaler', canvas.width / 2, 90);
 
     ctx.fillStyle = '#0f172a';
-    ctx.font = fontStr(13, 'bold');
-    ctx.fillText('প্রোপ্রাইটর: আবু সালেহ | মোবাইল: 01766761877', canvas.width / 2, 115);
+    ctx.font = fontStr(15, 'bold');
+    const mobileNumFormatted = isBn ? toBengaliDigits('01766761877') : '01766761877';
+    ctx.fillText(isBn ? `প্রোপ্রাইটর: আবু সালেহ | মোবাইল: ${mobileNumFormatted}` : `Proprietor: Abu Saleh | Mobile: ${mobileNumFormatted}`, canvas.width / 2, 115);
 
     // Dividers
     ctx.beginPath();
@@ -1169,102 +1360,136 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     // Memo serial detail row
     ctx.textAlign = 'left';
     ctx.fillStyle = '#1e293b';
-    ctx.font = fontStr(13, 'bold');
+    ctx.font = fontStr(16, 'bold');
     if (receiptVisibility.challanNo) {
-      ctx.fillText(`চালান নং (Challan #): ${previewResult.challanNo}`, 40, 175);
+      const challanNoToShow = isBn ? toBengaliDigits(previewResult.challanNo) : previewResult.challanNo;
+      ctx.fillText(isBn ? `চালান নং: ${challanNoToShow}` : `Challan No: ${challanNoToShow}`, 40, 175);
     }
 
     ctx.textAlign = 'right';
-    const dateFormatted = new Date().toLocaleDateString('bn-BD', { day: 'numeric', month: 'long', year: 'numeric' });
-    ctx.fillText(`তারিখ: ${dateFormatted}`, canvas.width - 40, 175);
+    const dateBD = new Date().toLocaleDateString('bn-BD', { day: 'numeric', month: 'long', year: 'numeric' });
+    const dateFormatted = isBn ? toBengaliDigits(dateBD) : new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' });
+    ctx.fillText(isBn ? `তারিখ: ${dateFormatted}` : `Date: ${dateFormatted}`, canvas.width - 40, 175);
 
     // Structured panel background
     ctx.fillStyle = '#fbfbfd';
-    ctx.fillRect(40, 205, canvas.width - 80, 245);
-    ctx.strokeStyle = '#e2e8f0';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(40, 205, canvas.width - 80, 245);
+    ctx.fillRect(40, 205, canvas.width - 80, 255);
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(40, 205, canvas.width - 80, 255);
 
     // Data rows according to visibility settings configured in App Settings
     const displayList = [];
     if (receiptVisibility.sellerName) {
-      displayList.push({ label: 'বিক্রেতার নাম (Seller Name)', value: previewResult.sellerName });
+      displayList.push({ 
+        label: isBn ? 'বিক্রেতার নাম:' : 'Seller Name:', 
+        value: previewResult.sellerName 
+      });
     }
     if (receiptVisibility.totalWeight) {
-      displayList.push({ label: 'মোট পরিমাণ (Weight in KG)', value: `${previewResult.totalKg} KG` });
+      displayList.push({ 
+        label: isBn ? 'মোট ওজন:' : 'Total Weight:', 
+        value: isBn ? `${toBengaliDigits(previewResult.totalKg)} কেজি` : `${previewResult.totalKg} KG` 
+      });
+    }
+    if (previewResult.isMinusCalculated && previewResult.deductedWeight !== undefined) {
+      displayList.push({
+        label: isBn ? 'ওজন কর্তন:' : 'Deducted Weight:',
+        value: isBn 
+          ? `-${toBengaliDigits(previewResult.deductedWeight.toFixed(1))} কেজি` 
+          : `-${previewResult.deductedWeight.toFixed(1)} KG`,
+        color: '#dc2626'
+      });
     }
     if (receiptVisibility.monSystem) {
-      displayList.push({ label: 'মন সিস্টেম (Mon System)', value: `${previewResult.monType} KG/Mon` });
+      displayList.push({ 
+        label: isBn ? 'মন সিস্টেম:' : 'Mon System:', 
+        value: isBn ? `${toBengaliDigits(previewResult.monType)} কেজি/মন` : `${previewResult.monType} KG/Mon` 
+      });
     }
     if (receiptVisibility.totalResult) {
-      displayList.push({ label: 'রূপান্তরিত হিসাব (Yield)', value: `${previewResult.monCount} মন ${previewResult.extraKg} কেজি`, color: '#16a34a' });
+      displayList.push({ 
+        label: isBn ? (previewResult.isMinusCalculated ? 'নিট রূপান্তরিত:' : 'রূপান্তরিত হিসাব:') : 'Converted Weight:', 
+        value: isBn 
+          ? `${toBengaliDigits(previewResult.monCount)} মন ${toBengaliDigits(previewResult.extraKg)} কেজি` 
+          : `${previewResult.monCount} Mon ${previewResult.extraKg} KG`, 
+        color: '#16a34a' 
+      });
     }
     if (receiptVisibility.rate) {
-      displayList.push({ label: 'নির্ধারিত দর (Rate / Mon)', value: `৳${parseFloat(formData.ratePerMon)}` });
+      displayList.push({ 
+        label: isBn ? 'নির্ধারিত দর:' : 'Rate per Mon:', 
+        value: isBn ? `${toBengaliDigits(previewResult.ratePerMon)} টাকা` : `৳${previewResult.ratePerMon}` 
+      });
     }
 
-    let itemY = 245;
+    let itemY = 250;
     displayList.forEach((r, index) => {
       ctx.textAlign = 'left';
-      ctx.fillStyle = '#475569';
-      ctx.font = fontStr(12.5, 'bold');
-      ctx.fillText(r.label, 55, itemY + index * 38);
+      ctx.fillStyle = '#1e293b';
+      ctx.font = fontStr(17, 'bold');
+      ctx.fillText(r.label, 55, itemY + index * 45);
 
       ctx.textAlign = 'right';
-      ctx.fillStyle = r.color || '#0f172a';
-      ctx.font = fontStr(13, 'bold');
-      ctx.fillText(r.value, canvas.width - 55, itemY + index * 38);
+      ctx.fillStyle = r.color || '#000000';
+      ctx.font = fontStr(18, 'bold');
+      ctx.fillText(r.value, canvas.width - 55, itemY + index * 45);
 
       // Separator lines
       if (index < displayList.length - 1) {
         ctx.beginPath();
-        ctx.moveTo(50, itemY + index * 38 + 18);
-        ctx.lineTo(canvas.width - 50, itemY + index * 38 + 18);
-        ctx.strokeStyle = '#f1f5f9';
+        ctx.moveTo(50, itemY + index * 45 + 18);
+        ctx.lineTo(canvas.width - 50, itemY + index * 45 + 18);
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.lineWidth = 1;
         ctx.stroke();
       }
     });
 
     // Net Payable Box Container
     if (receiptVisibility.totalPayable) {
-      ctx.fillStyle = '#000055';
-      ctx.fillRect(40, 480, canvas.width - 80, 75);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(40, 480, canvas.width - 80, 85);
 
       ctx.fillStyle = '#facc15';
       ctx.textAlign = 'left';
-      ctx.font = fontStr(14, 'bold');
-      ctx.fillText('সর্বমোট পরিশোধ্য বিল (Total Paid):', 60, 524);
+      ctx.font = fontStr(18, 'bold');
+      ctx.fillText(isBn ? 'সর্বমোট পরিশোধিত দাম:' : 'Total Payable Bill:', 60, 532);
 
       ctx.textAlign = 'right';
-      ctx.font = fontStr(24, 'bold');
-      ctx.fillText(`৳${Math.round(previewResult.price).toLocaleString()}`, canvas.width - 60, 526);
+      ctx.font = fontStr(30, 'bold');
+      const formattedPrice = Math.round(previewResult.price);
+      const priceToShow = isBn ? `${toBengaliDigits(formattedPrice.toLocaleString())} টাকা` : `৳${formattedPrice.toLocaleString()}`;
+      ctx.fillText(priceToShow, canvas.width - 60, 534);
     }
 
     // Footnote Warning
     if (receiptVisibility.disclaimer) {
       ctx.textAlign = 'center';
-      ctx.font = fontStr(10, 'bold');
+      ctx.font = fontStr(13, 'bold');
       ctx.fillStyle = '#dc2626';
-      ctx.fillText('বিশেষ দ্রষ্টব্য (Warning Size Disclaimer):', canvas.width / 2, 580);
+      ctx.fillText(isBn ? 'विशेष দ্রষ্টব্য (Warning Disclaimer):' : 'Warning Disclaimer:', canvas.width / 2, 590);
 
-      ctx.fillStyle = '#475569';
-      ctx.font = fontStr(9.5, 'bold');
-      ctx.fillText('এখানে কোনো চিকন খড়ি নেওয়া হয় না। খড়ির সাইজ সর্বনিম্ন বের ৬" ইঞ্চি', canvas.width / 2, 599);
-      ctx.fillText('থেকে সর্বোচ্চ ৬৫ ইঞ্চি পর্যন্ত ও লম্বায় সর্বনিম্ন ৩০ ইঞ্চি থেকে ৬০ ইঞ্চি পর্যন্ত খড়ি নেওয়া হয়।', canvas.width / 2, 614);
+      ctx.fillStyle = '#1e293b';
+      ctx.font = fontStr(12, 'bold');
+      if (isBn) {
+        ctx.fillText('এখানে কোনো চিকন খড়ি নেওয়া হয় না। খড়ির সাইজ সর্বনিম্ন বের ৬" ইঞ্চি', canvas.width / 2, 615);
+        ctx.fillText('থেকে সর্বোচ্চ ৬৫ ইঞ্চি পর্যন্ত ও লম্বায় সর্বনিম্ন ৩০ ইঞ্চি থেকে ৬০ ইঞ্চি পর্যন্ত খড়ি নেওয়া হয়।', canvas.width / 2, 635);
+        ctx.fillText('শিমুল, জিকা, আমরা, ডুমুর, শেওড়া, জিগনাই কম চলে এবং ১১০ টাকা রেট।', canvas.width / 2, 655);
+      } else {
+        ctx.fillText('Thin firewood is strictly rejected. Circumference must be min 6" to max 65"', canvas.width / 2, 615);
+        ctx.fillText('and length must be min 30" to max 60".', canvas.width / 2, 635);
+        ctx.fillText('Shimul, Zika, Amra, Dumur, Sheora, Jignai are less in demand and rate is 110 TK.', canvas.width / 2, 655);
+      }
     }
 
     // Signatures row
     if (receiptVisibility.signatures) {
-      ctx.textAlign = 'left';
-      ctx.fillStyle = '#000000';
-      ctx.font = fontStr(11, 'bold');
-      ctx.fillText('অফিস সহকারী সাক্ষর', 45, 690);
-      ctx.fillText('Checked & Signed', 45, 706);
-
       ctx.textAlign = 'right';
-      ctx.fillText('-------------------------', canvas.width - 45, 675);
-      ctx.fillText('প্রোপ্রাইটর সাক্ষর (Abu Saleh)', canvas.width - 45, 690);
-      ctx.fillText('Authorized Signature', canvas.width - 45, 706);
+      ctx.fillStyle = '#000000';
+      ctx.font = fontStr(14, 'bold');
+      ctx.fillText('-------------------------', canvas.width - 45, 725);
+      ctx.fillText(isBn ? 'প্রোপ্রাইটর স্বাক্ষর (আবু সালেহ)' : 'Proprietor Signature (Abu Saleh)', canvas.width - 45, 745);
     }
 
     const dataURI = canvas.toDataURL('image/png');
@@ -1277,111 +1502,331 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
   return (
     <div className="space-y-6">
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-3">
-          <CalcIcon className="text-yellow-500 w-5 h-5 animate-bounce" />
-          <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">{t.calculatorSectionTitle}</h3>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <CalcIcon className="text-yellow-500 w-5 h-5 animate-bounce" />
+            <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">{t.calculatorSectionTitle}</h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setIsMinusMode(!isMinusMode);
+              setPreviewResult(null); // Clear preview when changing modes
+            }}
+            className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all select-none active:scale-95 flex items-center gap-1.5 ${
+              isMinusMode 
+                ? 'bg-rose-100 text-rose-700 border border-rose-300' 
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
+            }`}
+          >
+            <span>{isMinusMode ? "✕ [সাধারণ হিসাব]" : "⚖ [মাইনস ক্যালকুলেট]"}</span>
+          </button>
         </div>
         
-        {/* Horizontal Input Row aligned equally */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end mb-6">
-          <div className="md:col-span-3">
-            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.sellerName}</label>
-            <input 
-              type="text" 
-              placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
-              className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold focus:ring-2 focus:ring-yellow-400 outline-none"
-              value={formData.sellerName}
-              onChange={e => setFormData({ ...formData, sellerName: e.target.value })}
-            />
-          </div>
-          <div className="md:col-span-2">
-            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.totalWeight}</label>
-            <input 
-              type="number" 
-              placeholder="0"
-              className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
-              value={formData.totalKg}
-              onChange={e => setFormData({ ...formData, totalKg: e.target.value })}
-            />
-          </div>
-          <div className="md:col-span-2">
-            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.challanNum}</label>
-            <input 
-              type="number" 
-              placeholder="0"
-              className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 text-rose-600 outline-none"
-              value={formData.challanNo}
-              onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
-            />
-          </div>
-          <div className="md:col-span-3">
-            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.monSystem}</label>
-            <div className="flex gap-1 h-11">
-              {[40, 41, 42, 43].map(type => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => setFormData({ ...formData, monType: type as MonType })}
-                  className={`flex-1 rounded text-[10px] font-black transition-all border-2 ${
-                    formData.monType === type 
-                      ? 'bg-green-600 text-white border-green-600 shadow-sm' 
-                      : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'
-                  }`}
-                >
-                  {type} KG
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="md:col-span-2">
-            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.ratePerMon}</label>
-            <input 
-              type="number" 
-              placeholder="0"
-              className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
-              value={formData.ratePerMon}
-              onChange={e => setFormData({ ...formData, ratePerMon: e.target.value })}
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 pt-1">
-          {/* Allow manual custom sequential check or bypass */}
-          <div className="flex items-center">
-            {showChallanWarning ? (
-              <label className="flex items-center gap-2 bg-red-50 text-red-950 px-3 py-1.5 rounded border border-red-200 text-[10px] font-bold cursor-pointer select-none active:scale-95 shadow-sm">
+        {!isMinusMode ? (
+          <>
+            {/* Horizontal Input Row aligned equally */}
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end mb-6">
+              <div className="md:col-span-3">
+                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.sellerName}</label>
                 <input 
-                  type="checkbox" 
-                  checked={allowSerialBypass}
-                  onChange={e => setAllowSerialBypass(e.target.checked)}
-                  className="rounded border-red-300 text-red-600 focus:ring-red-400 accent-red-600 cursor-pointer"
+                  type="text" 
+                  placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
+                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold focus:ring-2 focus:ring-yellow-400 outline-none"
+                  value={formData.sellerName}
+                  onChange={e => setFormData({ ...formData, sellerName: e.target.value })}
                 />
-                <span className="leading-none text-red-700 font-extrabold">{t.serialBypass}</span>
-              </label>
-            ) : (
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
-                ✔ {language === 'bn' ? `পরবর্তী প্রত্যাশিত ওয়ান-ক্লিক চালান নম্বর হলো #${expectedNextChallan}` : `Correct sequence predicts Challan #${expectedNextChallan}`}
-              </p>
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.totalWeight}</label>
+                <input 
+                  type="number" 
+                  placeholder="0"
+                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                  value={formData.totalKg}
+                  onChange={e => setFormData({ ...formData, totalKg: e.target.value })}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.challanNum}</label>
+                <input 
+                  type="number" 
+                  placeholder="0"
+                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 text-rose-600 outline-none"
+                  value={formData.challanNo}
+                  onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
+                />
+              </div>
+              <div className="md:col-span-3">
+                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.monSystem}</label>
+                <div className="flex gap-1 h-11">
+                  {[40, 41, 42, 43].map(type => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, monType: type as MonType })}
+                      className={`flex-1 rounded text-[10px] font-black transition-all border-2 ${
+                        formData.monType === type 
+                          ? 'bg-green-600 text-white border-green-600 shadow-sm' 
+                          : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'
+                      }`}
+                    >
+                      {type} KG
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.ratePerMon}</label>
+                <input 
+                  type="number" 
+                  placeholder="0"
+                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                  value={formData.ratePerMon}
+                  onChange={e => setFormData({ ...formData, ratePerMon: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 pt-1">
+              {/* Allow manual custom sequential check or bypass */}
+              <div className="flex items-center">
+                {showChallanWarning ? (
+                  <label className="flex items-center gap-2 bg-red-50 text-red-950 px-3 py-1.5 rounded border border-red-200 text-[10px] font-bold cursor-pointer select-none active:scale-95 shadow-sm">
+                    <input 
+                      type="checkbox" 
+                      checked={allowSerialBypass}
+                      onChange={e => setAllowSerialBypass(e.target.checked)}
+                      className="rounded border-red-300 text-red-600 focus:ring-red-400 accent-red-600 cursor-pointer"
+                    />
+                    <span className="leading-none text-red-700 font-extrabold">{t.serialBypass}</span>
+                  </label>
+                ) : (
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                    ✔ {language === 'bn' ? `পরবর্তী প্রত্যাশিত ওয়ান-ক্লিক চালান নম্বর হলো #${expectedNextChallan}` : `Correct sequence predicts Challan #${expectedNextChallan}`}
+                  </p>
+                )}
+              </div>
+
+              <div className="w-full sm:w-64">
+                <button 
+                  onClick={handleCalculate}
+                  className="w-full h-11 bg-yellow-400 text-black font-black uppercase text-[11px] tracking-wider rounded shadow hover:bg-yellow-500 transition-all active:scale-95 flex items-center justify-center gap-2"
+                >
+                  <span>{t.calculate}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Live error/suggestion notification row */}
+            {showChallanWarning && (
+              <div className="mt-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-bold flex items-center gap-2 animate-pulse">
+                <span>⚠️</span>
+                <p>
+                  {t.challanSuggested} <span className="font-extrabold text-rose-700 bg-white px-2 py-0.5 rounded shadow-sm">#{expectedNextChallan}</span>
+                </p>
+              </div>
             )}
-          </div>
+          </>
+        ) : (
+          <div className="space-y-6">
+            {/* Toggle bar inside for inputs of minus calculate */}
+            <div className="bg-slate-50 p-4 rounded-lg border border-slate-150 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? "বিক্রেতার নাম" : "Seller Name"}
+                  </label>
+                  <input 
+                    type="text" 
+                    placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
+                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-bold focus:ring-2 focus:ring-yellow-400 outline-none"
+                    value={minusFormData.sellerName}
+                    onChange={e => setMinusFormData({ ...minusFormData, sellerName: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? "মোট ওজন (কেজি)" : "Total Weight (KG)"}
+                  </label>
+                  <input 
+                    type="number" 
+                    placeholder="0"
+                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                    value={minusFormData.totalKg}
+                    onChange={e => setMinusFormData({ ...minusFormData, totalKg: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? "চালান নং" : "Challan No"}
+                  </label>
+                  <input 
+                    type="number" 
+                    placeholder="0"
+                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black text-rose-600 focus:ring-2 focus:ring-yellow-400 outline-none"
+                    value={minusFormData.challanNo}
+                    onChange={e => setMinusFormData({ ...minusFormData, challanNo: e.target.value })}
+                  />
+                </div>
+              </div>
 
-          <div className="w-full sm:w-64">
-            <button 
-              onClick={handleCalculate}
-              className="w-full h-11 bg-yellow-400 text-black font-black uppercase text-[11px] tracking-wider rounded shadow hover:bg-yellow-500 transition-all active:scale-95 flex items-center justify-center gap-2"
-            >
-              <span>{t.calculate}</span>
-            </button>
-          </div>
-        </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+                {/* Switch between weight deduction and target price */}
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-2 block">
+                    {language === 'bn' ? "কর্তন পদ্ধতি নির্বাচন করুন" : "Select Deduction Input Mode"}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMinusFormData({ ...minusFormData, activeInput: 'weight' })}
+                      className={`h-10 rounded text-xs font-bold transition-all border ${
+                        minusFormData.activeInput === 'weight'
+                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      {language === 'bn' ? "কর্তন কেজি সরাসরি" : "Minus Weight (KG)"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMinusFormData({ ...minusFormData, activeInput: 'targetPrice' })}
+                      className={`h-10 rounded text-xs font-bold transition-all border ${
+                        minusFormData.activeInput === 'targetPrice'
+                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      {language === 'bn' ? "কাঙ্ক্ষিত মনের দাম" : "Target Mon Price"}
+                    </button>
+                  </div>
+                </div>
 
-        {/* Live error/suggestion notification row */}
-        {showChallanWarning && (
-          <div className="mt-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-bold flex items-center gap-2 animate-pulse">
-            <span>⚠️</span>
-            <p>
-              {t.challanSuggested} <span className="font-extrabold text-rose-700 bg-white px-2 py-0.5 rounded shadow-sm">#{expectedNextChallan}</span>
-            </p>
+                <div>
+                  {minusFormData.activeInput === 'weight' ? (
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-2 block">
+                        {language === 'bn' ? "কর্তন কেজি" : "Minus Weight (KG)"}
+                      </label>
+                      <input
+                        type="number"
+                        placeholder={language === 'bn' ? "কর্তনযোগ্য ওজন লিখুন" : "e.g. 20"}
+                        className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black text-rose-600 focus:ring-2 focus:ring-yellow-400 outline-none"
+                        value={minusFormData.minusWeight}
+                        onChange={e => setMinusFormData({ ...minusFormData, minusWeight: e.target.value })}
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-2 block">
+                        {language === 'bn' ? "কাঙ্ক্ষিত মনের দাম" : "Target Mon Price (৳)"}
+                      </label>
+                      <input
+                        type="number"
+                        placeholder={language === 'bn' ? "কাঙ্ক্ষিত মনের দাম লিখুন" : "e.g. 140"}
+                        className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black text-emerald-600 focus:ring-2 focus:ring-yellow-400 outline-none"
+                        value={minusFormData.targetMonPrice}
+                        onChange={e => setMinusFormData({ ...minusFormData, targetMonPrice: e.target.value })}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? "মন সিস্টেম নির্বাচন" : "Mon System Selection"}
+                  </label>
+                  <div className="flex gap-1 h-10">
+                    {[40, 41, 42, 43].map(type => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => setMinusFormData({ ...minusFormData, monType: type as MonType })}
+                        className={`flex-1 rounded text-[10px] font-black transition-all border ${
+                          minusFormData.monType === type 
+                            ? 'bg-green-600 text-white border-green-600 shadow-sm' 
+                            : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        {type} KG
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? "নির্ধারিত দর (প্রতি মণ)" : "Regular Price per Mon (৳)"}
+                  </label>
+                  <input 
+                    type="number" 
+                    placeholder="0"
+                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                    value={minusFormData.ratePerMon}
+                    onChange={e => setMinusFormData({ ...minusFormData, ratePerMon: e.target.value })}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Dynamic Results Card - updates real-time */}
+            <div className="bg-rose-50/50 p-5 rounded-xl border border-rose-200/60 shadow-xs space-y-3">
+              <h4 className="text-[11px] font-black text-rose-800 uppercase tracking-widest border-b border-rose-200/50 pb-1">
+                {language === 'bn' ? "মাইনাস হিসাবের লাইভ ফলাফল" : "Live Minus Calculation Result"}
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-700">
+                    <span className="font-bold text-slate-500">
+                      {language === 'bn' ? "ওজন কর্তনের হার: " : "O वजन কর্তনের হার (Deduction Rate): "}
+                    </span>
+                    <span className="font-black text-rose-600">
+                      {minusCalcResult.deductionPercentage.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-700">
+                    <span className="font-bold text-slate-500">
+                      {language === 'bn' ? "কর্তন বাদে নিট ওজন: " : "Net Weight after deduction: "}
+                    </span>
+                    <span className="font-black text-slate-900">
+                      {minusCalcResult.netWeight.toFixed(1)} কেজি (KG)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-700">
+                    <span className="font-bold text-slate-500">
+                      {language === 'bn' ? "কর্তনকৃত হিসাবে প্রতি মনের মূল্য: " : "Effective Price per Mon: "}
+                    </span>
+                    <span className="font-black text-emerald-600">
+                      ৳{Math.round(minusCalcResult.effectivePrice)}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-700">
+                    <span className="font-bold text-slate-500">
+                      {language === 'bn' ? "এত কেজি কর্তনে মোট মণ: " : "Total Mon after deduction: "}
+                    </span>
+                    <span className="font-black text-green-700 text-sm">
+                      {minusCalcResult.monCount} মন {minusCalcResult.extraKg} কেজি
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row gap-3 pt-2">
+              <button 
+                onClick={handleSaveMinusCalculation}
+                className="flex-1 h-11 bg-rose-600 hover:bg-rose-700 text-white font-black uppercase text-[11px] tracking-wider rounded shadow transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <span>{language === 'bn' ? "হিসাবটি খতিয়ানে সেভ করুন" : "Save Calculation"}</span>
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -1392,21 +1837,25 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
         </h3>
         
         <CompactReceipt 
-          formData={previewResult || {
+          formData={previewResult ? previewResult : (isMinusMode ? {
+            sellerName: minusFormData.sellerName,
+            totalKg: minusFormData.totalKg,
+            challanNo: minusFormData.challanNo,
+            monType: minusFormData.monType
+          } : {
             sellerName: formData.sellerName,
             totalKg: formData.totalKg,
             challanNo: formData.challanNo,
             monType: formData.monType
-          }} 
-          result={previewResult ? previewResult : currentCalcResult} 
+          })} 
+          result={previewResult ? previewResult : (isMinusMode ? { ...minusCalcResult, isMinusCalculated: true, ratePerMon: parseFloat(minusFormData.ratePerMon) || 0 } : currentCalcResult)} 
           onCopy={handleCopy}
           onSaveImage={handleSaveImage}
-          onSaveToDatabase={handleSaveToDatabase}
           isCalculated={previewResult !== null}
           t={t}
           language={language}
           receiptVisibility={receiptVisibility}
-          rateRaw={formData.ratePerMon}
+          rateRaw={isMinusMode ? minusFormData.ratePerMon : formData.ratePerMon}
         />
       </div>
     </div>
@@ -1418,7 +1867,6 @@ interface CompactReceiptProps {
   result: any;
   onCopy: () => void;
   onSaveImage: () => void;
-  onSaveToDatabase: () => void;
   isCalculated: boolean;
   t: any;
   language: 'bn' | 'en';
@@ -1431,7 +1879,6 @@ function CompactReceipt({
   result, 
   onCopy, 
   onSaveImage, 
-  onSaveToDatabase, 
   isCalculated, 
   t, 
   language,
@@ -1465,9 +1912,17 @@ function CompactReceipt({
           </div>
         )}
         {receiptVisibility.totalWeight && (
-          <div className="flex justify-between">
-            <span className="font-bold text-slate-400">Total KG / ওজন:</span>
-            <span className="font-black text-slate-900">{formData.totalKg || '0'} KG</span>
+          <div className="space-y-1">
+            <div className="flex justify-between">
+              <span className="font-bold text-slate-400">Total KG / ওজন:</span>
+              <span className="font-black text-slate-900">{formData.totalKg || '0'} KG</span>
+            </div>
+            {result.isMinusCalculated && result.deductedWeight !== undefined && (
+              <div className="flex justify-between text-rose-600 font-extrabold bg-rose-50/70 p-1.5 rounded border border-rose-100 text-[10px]">
+                <span>Deduction / ওজন কর্তন:</span>
+                <span>-{result.deductedWeight.toFixed(1)} KG ({result.deductionPercentage?.toFixed(1)}%)</span>
+              </div>
+            )}
           </div>
         )}
         {receiptVisibility.monSystem && (
@@ -1478,16 +1933,26 @@ function CompactReceipt({
         )}
         {receiptVisibility.totalResult && (
           <div className="flex justify-between py-2 border-y border-dashed border-slate-200 mt-2 bg-yellow-50/50 px-1">
-            <span className="font-extrabold text-slate-800">Converted / রূপান্তরিত:</span>
+            <span className="font-extrabold text-slate-800">
+              {result.isMinusCalculated ? 'Net Weight / নিট ওজন:' : 'Converted / রূপান্তরিত:'}
+            </span>
             <span className="font-black text-base text-green-600">
               {result.monCount} মন {result.extraKg} কেজি
             </span>
           </div>
         )}
         {receiptVisibility.rate && (
-          <div className="flex justify-between">
-            <span className="font-bold text-slate-400">Rate / দর প্রতি মন:</span>
-            <span className="font-black text-slate-900">৳{rateRaw || '0'}</span>
+          <div className="space-y-1">
+            <div className="flex justify-between">
+              <span className="font-bold text-slate-400">{result.isMinusCalculated ? 'Regular Rate / নির্ধারিত দর:' : 'Rate / দর প্রতি মন:'}</span>
+              <span className="font-black text-slate-900">৳{result.isMinusCalculated ? result.ratePerMon : (rateRaw || '0')}</span>
+            </div>
+            {result.isMinusCalculated && result.effectivePrice !== undefined && (
+              <div className="flex justify-between text-rose-600 font-extrabold text-[10px]">
+                <span>Effective Rate / কর্তনকৃত দর:</span>
+                <span>৳{Math.round(result.effectivePrice)} /মন</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1510,13 +1975,9 @@ function CompactReceipt({
       {/* Primary manual Action triggered to Save in ledger */}
       {isCalculated ? (
         <div className="space-y-2 mb-4">
-          <button
-            onClick={onSaveToDatabase}
-            className="w-full h-11 bg-green-600 hover:bg-green-700 text-white font-black rounded uppercase text-xs tracking-wider transition-all flex items-center justify-center gap-2 shadow"
-          >
-            <Save size={14} />
-            <span>{t.saveSoftware}</span>
-          </button>
+          <div className="w-full py-2.5 bg-green-50 border border-green-200 text-green-700 font-extrabold rounded text-center text-xs flex items-center justify-center gap-2 shadow-sm">
+            <span>✔ {language === 'bn' ? 'সফটওয়্যারে অটো সেভ করা হয়েছে!' : 'Auto-Saved of calculation successful!'}</span>
+          </div>
         </div>
       ) : (
         <div className="p-3 bg-slate-50 rounded text-center text-slate-400 text-[10px] font-bold border border-slate-100 mb-4 uppercase">
@@ -1552,14 +2013,16 @@ function CompactReceipt({
 interface HistorySectionProps {
   calculations: Calculation[];
   onDelete: (id: string) => void;
+  onEdit: (updated: Calculation) => void;
   t: any;
   language: 'bn' | 'en';
   allCalculations: Calculation[];
   currentUser: string;
 }
 
-function HistorySection({ calculations, onDelete, t, language, allCalculations, currentUser }: HistorySectionProps) {
+function HistorySection({ calculations, onDelete, onEdit, t, language, allCalculations, currentUser }: HistorySectionProps) {
   const [operatorFilter, setOperatorFilter] = useState<string>('ALL');
+  const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
 
   // Compute list of unique operators that have stored calculations
   const operators = useMemo(() => {
@@ -1611,51 +2074,379 @@ function HistorySection({ calculations, onDelete, t, language, allCalculations, 
       {filteredList.length === 0 ? (
         <div className="p-12 text-center text-slate-300 font-bold uppercase text-[10px]">No entries found</div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="bg-slate-50 text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-100">
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Challan</th>
-                <th className="px-3 py-3">Seller</th>
-                <th className="px-3 py-3">Weight (KG)</th>
-                <th className="px-3 py-3">Mon</th>
-                <th className="px-3 py-3">Rate</th>
-                <th className="px-4 py-3">Total</th>
-                <th className="px-3 py-3">User</th>
-                <th className="px-4 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredList.map((calc) => {
-                const monCount = Math.floor(calc.totalKg / calc.monType);
-                const extraKg = calc.totalKg % calc.monType;
-                return (
-                  <tr key={calc.id} className="text-[11px] hover:bg-slate-50/70">
-                    <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
-                      {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
-                    </td>
-                    <td className="px-4 py-3 font-black text-rose-500">#{calc.challanNo !== undefined ? calc.challanNo : '---'}</td>
-                    <td className="px-3 py-3 font-black text-slate-800">{calc.sellerName}</td>
-                    <td className="px-3 py-3 text-slate-600 font-bold">{calc.totalKg} KG</td>
-                    <td className="px-3 py-3 font-bold text-green-700 whitespace-nowrap">{monCount} M {extraKg} KG</td>
-                    <td className="px-3 py-3 text-slate-500 font-bold">৳{calc.ratePerMon}</td>
-                    <td className="px-4 py-3 font-black text-slate-900">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
-                    <td className="px-3 py-3">
-                      <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                        {calc.createdBy || 'Guest'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <button onClick={() => onDelete(calc.id)} className="text-red-400 hover:text-red-600 p-1">
-                        <Trash2 size={13} />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <>
+          {/* Mobile Card List View (Visible only on small screens) */}
+          <div className="block md:hidden divide-y divide-slate-100 bg-white">
+            {filteredList.map((calc) => {
+              const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                : calc.totalKg;
+              const monCount = Math.floor(netKg / calc.monType);
+              const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+              return (
+                <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-slate-400">
+                      📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                    </span>
+                    <span className="font-black text-rose-500 bg-rose-50 border border-rose-100 rounded px-1.5 py-0.5 text-[10px]">
+                      #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                    </span>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-3 bg-slate-50/50 p-2.5 rounded-lg border border-slate-100">
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
+                      <div className="font-black text-slate-800 flex flex-wrap items-center gap-1 mt-0.5">
+                        {calc.sellerName}
+                        {calc.isMinusCalculated && (
+                          <span className="inline-block text-[8px] bg-rose-50 text-rose-600 border border-rose-100 rounded px-1 font-extrabold uppercase scale-90 origin-left">
+                            {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
+                      <div className="font-black text-emerald-600 text-sm mt-0.5">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
+                      <div className="font-bold text-slate-600 mt-0.5 text-xs">
+                        {calc.totalKg} KG
+                        {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
+                          <div className="text-[9px] text-rose-500 font-black">
+                            -{calc.deductedWeight.toFixed(1)} KG ({calc.deductionPercentage?.toFixed(1)}%)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'রূপান্তরিত ওজন' : 'Converted Weight'}</div>
+                      <div className="font-bold text-green-700 mt-0.5 text-xs">
+                        {monCount} M {extraKg} KG
+                        {calc.isMinusCalculated && (
+                          <div className="text-[9px] text-slate-400 font-medium">
+                            {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'দর প্রতি মণ' : 'Rate / Mon'}</div>
+                      <div className="font-bold text-slate-600 mt-0.5 text-xs">
+                        ৳{calc.ratePerMon}
+                        {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
+                          <div className="text-[9px] text-emerald-600 font-extrabold">
+                            Target: ৳{calc.targetMonPrice}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">User / মন সাইজ</div>
+                      <div className="font-bold text-slate-500 mt-0.5 text-[10px]">
+                        {calc.monType} KG | {calc.createdBy || 'Guest'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button 
+                      onClick={() => setEditingCalc(calc)}
+                      className="flex items-center gap-1 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 px-3.5 py-2 rounded-lg font-black text-xs transition-all active:scale-95"
+                    >
+                      <Edit size={13} />
+                      <span>{language === 'bn' ? 'সংশোধন' : 'Edit'}</span>
+                    </button>
+                    <button 
+                      onClick={() => onDelete(calc.id)} 
+                      className="flex items-center gap-1 bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 px-3.5 py-2 rounded-lg font-black text-xs transition-all active:scale-95"
+                    >
+                      <Trash2 size={13} />
+                      <span>{language === 'bn' ? 'মুছে ফেলুন' : 'Delete'}</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop Table View (Visible only on medium screens and up) */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-100">
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Challan</th>
+                  <th className="px-3 py-3">Seller</th>
+                  <th className="px-3 py-3">Weight (KG)</th>
+                  <th className="px-3 py-3">Mon</th>
+                  <th className="px-3 py-3">Rate</th>
+                  <th className="px-4 py-3">Total</th>
+                  <th className="px-3 py-3">User</th>
+                  <th className="px-4 py-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredList.map((calc) => {
+                  const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                    ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                    : calc.totalKg;
+                  const monCount = Math.floor(netKg / calc.monType);
+                  const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                  return (
+                    <tr key={calc.id} className="text-[11px] hover:bg-slate-50/70">
+                      <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
+                        {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                      </td>
+                      <td className="px-4 py-3 font-black text-rose-500">#{calc.challanNo !== undefined ? calc.challanNo : '---'}</td>
+                      <td className="px-3 py-3 font-black text-slate-800">
+                        {calc.sellerName}
+                        {calc.isMinusCalculated && (
+                          <span className="ml-1.5 inline-block text-[9px] bg-rose-50 text-rose-600 border border-rose-100 rounded px-1 font-extrabold uppercase">
+                            {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-slate-600 font-bold whitespace-nowrap">
+                        <div>{calc.totalKg} KG</div>
+                        {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
+                          <div className="text-[10px] text-rose-500 font-black">
+                            -{calc.deductedWeight.toFixed(1)} KG ({calc.deductionPercentage?.toFixed(1)}%)
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 font-bold text-green-700 whitespace-nowrap">
+                        <div>{monCount} M {extraKg} KG</div>
+                        {calc.isMinusCalculated && (
+                          <div className="text-[9px] text-slate-400 font-bold">
+                            {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-slate-500 font-bold whitespace-nowrap">
+                        <div>৳{calc.ratePerMon}</div>
+                        {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
+                          <div className="text-[9px] text-emerald-600 font-extrabold">
+                            Target: ৳{calc.targetMonPrice}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-black text-slate-900">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
+                      <td className="px-3 py-3">
+                        <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                          {calc.createdBy || 'Guest'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => setEditingCalc(calc)}
+                            className="text-slate-400 hover:text-blue-600 p-1.5 rounded hover:bg-slate-100/80 transition-all"
+                            title={language === 'bn' ? 'সম্পাদনা করুন' : 'Edit record'}
+                          >
+                            <Edit size={13} />
+                          </button>
+                          <button 
+                            onClick={() => onDelete(calc.id)} 
+                            className="text-red-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50/80 transition-all"
+                            title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete record'}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {/* Edit Modal Overlay */}
+      {editingCalc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs font-sans">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-sm w-full overflow-hidden">
+            <div className="bg-yellow-400 p-4 font-black flex justify-between items-center text-slate-950">
+              <span className="text-xs uppercase tracking-wider">
+                {language === 'bn' ? 'চালান সংশোধন করুন' : 'Edit Challan Record'}
+              </span>
+              <button 
+                onClick={() => setEditingCalc(null)} 
+                className="hover:bg-black/10 w-7 h-7 rounded-full flex items-center justify-center text-sm"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="p-5 space-y-4 text-left">
+              <div>
+                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'চালান নম্বর' : 'Challan No'}
+                </label>
+                <input 
+                  type="number" 
+                  value={editingCalc.challanNo !== undefined ? editingCalc.challanNo : ''}
+                  onChange={e => setEditingCalc({ ...editingCalc, challanNo: parseInt(e.target.value) || 0 })}
+                  className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
+                />
+              </div>
+
+              <div>
+                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}
+                </label>
+                <input 
+                  type="text" 
+                  value={editingCalc.sellerName}
+                  onChange={e => setEditingCalc({ ...editingCalc, sellerName: e.target.value })}
+                  className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-medium outline-none focus:ring-1 focus:ring-yellow-400"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'ওজন (KG)' : 'Weight (KG)'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.totalKg}
+                    onChange={e => setEditingCalc({ ...editingCalc, totalKg: parseFloat(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'দর প্রতি মন (৳)' : 'Rate / Mon (৳)'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.ratePerMon}
+                    onChange={e => setEditingCalc({ ...editingCalc, ratePerMon: parseFloat(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'মন সাইজ' : 'Mon System'}
+                </label>
+                <select 
+                  value={editingCalc.monType}
+                  onChange={e => setEditingCalc({ ...editingCalc, monType: parseInt(e.target.value) as MonType })}
+                  className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 cursor-pointer"
+                >
+                  <option value={40}>40 KG</option>
+                  <option value={41}>41 KG</option>
+                  <option value={42}>42 KG</option>
+                  <option value={43}>43 KG</option>
+                </select>
+              </div>
+
+              {editingCalc.isMinusCalculated && (
+                <div className="bg-rose-50/50 p-3 rounded-lg border border-rose-100 space-y-3">
+                  <span className="text-[9px] font-black uppercase text-rose-800 tracking-wider">
+                    {language === 'bn' ? 'মাইনাস হিসাবের তথ্য' : 'Minus Calculation Attributes'}
+                  </span>
+                  {editingCalc.targetMonPrice !== undefined ? (
+                    <div>
+                      <label className="text-[9px] font-bold text-slate-500 uppercase block mb-1">
+                        {language === 'bn' ? 'কাঙ্ক্ষিত মনের দাম (৳)' : 'Target Mon Price (৳)'}
+                      </label>
+                      <input 
+                        type="number" 
+                        value={editingCalc.targetMonPrice}
+                        onChange={e => setEditingCalc({ ...editingCalc, targetMonPrice: parseFloat(e.target.value) || 0 })}
+                        className="w-full h-10 px-3 bg-white border border-rose-200 rounded text-xs font-bold text-emerald-600 outline-none focus:ring-1 focus:ring-yellow-400"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-[9px] font-bold text-slate-500 uppercase block mb-1">
+                        {language === 'bn' ? 'কর্তন ওজন (KG)' : 'Deducted Weight (KG)'}
+                      </label>
+                      <input 
+                        type="number" 
+                        value={editingCalc.deductedWeight || 0}
+                        onChange={e => setEditingCalc({ ...editingCalc, deductedWeight: parseFloat(e.target.value) || 0 })}
+                        className="w-full h-10 px-3 bg-white border border-rose-200 rounded text-xs font-bold text-rose-600 outline-none focus:ring-1 focus:ring-yellow-400"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+              <button 
+                type="button" 
+                onClick={() => setEditingCalc(null)} 
+                className="px-4.5 py-2 border border-slate-200 text-slate-500 rounded text-xs font-bold hover:bg-slate-100 transition-all active:scale-95"
+              >
+                {language === 'bn' ? 'বাতিল' : 'Cancel'}
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  const mType = editingCalc.monType || 40;
+                  const kg = editingCalc.totalKg || 0;
+                  const rate = editingCalc.ratePerMon || 0;
+                  
+                  let totalMon = kg / mType;
+                  let totalPrice = totalMon * rate;
+
+                  if (editingCalc.isMinusCalculated) {
+                    let netWeight = kg;
+                    let deductedWeight = editingCalc.deductedWeight || 0;
+                    let deductionPercentage = editingCalc.deductionPercentage || 0;
+
+                    if (editingCalc.targetMonPrice !== undefined) {
+                      // Target Mon Price mode
+                      const targetMonPrice = editingCalc.targetMonPrice;
+                      if (rate > 0) {
+                        const ratio = targetMonPrice / rate;
+                        netWeight = kg * ratio;
+                        deductedWeight = Math.max(0, kg - netWeight);
+                        deductionPercentage = (deductedWeight / kg) * 100;
+                      }
+                    } else {
+                      // Weight Deduction mode
+                      netWeight = Math.max(0, kg - deductedWeight);
+                      if (kg > 0) {
+                        deductionPercentage = (deductedWeight / kg) * 100;
+                      }
+                    }
+
+                    totalMon = netWeight / mType;
+                    totalPrice = totalMon * rate;
+
+                    onEdit({
+                      ...editingCalc,
+                      totalMon,
+                      totalPrice,
+                      deductedWeight,
+                      deductionPercentage
+                    });
+                  } else {
+                    onEdit({
+                      ...editingCalc,
+                      totalMon,
+                      totalPrice
+                    });
+                  }
+                  setEditingCalc(null);
+                }} 
+                className="px-5 py-2 bg-yellow-400 text-black font-black uppercase text-[10px] tracking-wider rounded shadow hover:bg-yellow-500 transition-all active:scale-95"
+              >
+                {language === 'bn' ? 'সেভ করুন' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
