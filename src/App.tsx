@@ -23,9 +23,13 @@ import {
   Printer,
   FileSpreadsheet,
   Check,
-  Building
+  Building,
+  Sun,
+  Moon,
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import AssistantSection from './components/AssistantSection';
 
 // --- Types ---
 
@@ -46,6 +50,7 @@ interface Calculation {
   deductionPercentage?: number;
   isMinusCalculated?: boolean;
   targetMonPrice?: number;
+  getEntryNo?: number;
 }
 
 interface Note {
@@ -55,7 +60,7 @@ interface Note {
   content: string;
 }
 
-type Tab = 'home' | 'calculator' | 'history' | 'note' | 'admin' | 'settings';
+type Tab = 'home' | 'calculator' | 'history' | 'note' | 'assistant' | 'settings';
 type DateFilter = 'today' | 'yesterday' | '7days' | '1month';
 
 interface ReceiptVisibility {
@@ -77,6 +82,67 @@ const toBengaliDigits = (num: number | string): string => {
     '5': '৫', '6': '৬', '7': '৭', '8': '৮', '9': '৯'
   };
   return num.toString().replace(/[0-9]/g, char => englishToBengaliMap[char] || char);
+};
+
+// --- Daily sequence (Get Entry) system with resetting ---
+const recalculateDailySequences = (calcs: Calculation[]): Calculation[] => {
+  const groups: { [dateStr: string]: Calculation[] } = {};
+  
+  const calcsWithDate = calcs.map(c => {
+    const d = new Date(c.timestamp);
+    const dateStr = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    return { ...c, dateStr };
+  });
+
+  calcsWithDate.forEach(c => {
+    if (!groups[c.dateStr]) {
+      groups[c.dateStr] = [];
+    }
+    groups[c.dateStr].push(c);
+  });
+
+  const updatedCalcsMap = new Map<string, number>();
+  Object.keys(groups).forEach(dateStr => {
+    const group = groups[dateStr];
+    // Sort oldest first (chronological order)
+    group.sort((a, b) => a.timestamp - b.timestamp);
+    group.forEach((calc, index) => {
+      updatedCalcsMap.set(calc.id, index + 1);
+    });
+  });
+
+  return calcs.map(c => ({
+    ...c,
+    getEntryNo: updatedCalcsMap.get(c.id) || 1
+  }));
+};
+
+const bidiNumberToWordBengali = (num: number): string => {
+  const words = [
+    'শূন্য', 'এক', 'দুই', 'তিন', 'চার', 'পাঁচ', 'ছয়', 'সাত', 'আট', 'নয়', 'দশ',
+    'এগারো', 'বারো', 'তেরো', 'চৌদ্দ', 'পনেরো', 'ষোলো', 'সতেরো', 'আঠারো', 'উনিশ', 'বিশ'
+  ];
+  if (num >= 0 && num <= 20) {
+    return words[num];
+  }
+  return num.toString();
+};
+
+const speakGetEntryBengali = (entryNo: number) => {
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+    const entryWord = bidiNumberToWordBengali(entryNo);
+    const text = `গেট এন্ট্রি ${entryWord} সেভ হয়েছে`;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'bn-BD';
+    utterance.rate = 1.0;
+    const voices = window.speechSynthesis.getVoices();
+    const bnVoice = voices.find(v => v.lang.startsWith('bn'));
+    if (bnVoice) {
+      utterance.voice = bnVoice;
+    }
+    window.speechSynthesis.speak(utterance);
+  }
 };
 const translations = {
   bn: {
@@ -136,7 +202,9 @@ const translations = {
     allUsers: "সকল অপারেটর",
     recordCount: "টি রেকর্ড খুঁজে পাওয়া গেছে",
     filterByOperator: "অপারেটর অনুযায়ী ফিল্টার করুন",
-    previewTitle: "বিল মেমোর প্রিভিউ মনিটর"
+    previewTitle: "বিল মেমোর প্রিভিউ মনিটর",
+    searchPlaceholder: "বিক্রেতার নাম দিয়ে খুঁজুন...",
+    searchLabel: "বিক্রেতার নাম ফিল্টার"
   },
   en: {
     title: "A.S Enterprise",
@@ -195,7 +263,9 @@ const translations = {
     allUsers: "All Operators",
     recordCount: "records indexed",
     filterByOperator: "Filter by User/Operator ID",
-    previewTitle: "Receipt Preview Monitor"
+    previewTitle: "Receipt Preview Monitor",
+    searchPlaceholder: "Search by seller name...",
+    searchLabel: "Filter by Seller Name"
   }
 };
 
@@ -208,6 +278,8 @@ export default function App() {
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
   const [defaultChallan, setDefaultChallan] = useState<number>(601);
   const [language, setLanguage] = useState<'bn' | 'en'>('bn');
+  const [darkMode, setDarkMode] = useState<boolean>(false);
+  const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
 
   // Multi User Authentication state
   const [currentUser, setCurrentUser] = useState<string>('Guest');
@@ -239,15 +311,39 @@ export default function App() {
     const savedUser = localStorage.getItem('as_enterprise_current_user');
     const savedRegUsers = localStorage.getItem('as_enterprise_registered_users');
     const savedVisibility = localStorage.getItem('as_enterprise_receipt_visibility');
+    const savedTheme = localStorage.getItem('as_enterprise_theme');
 
-    if (savedCalcs) setCalculations(JSON.parse(savedCalcs));
+    if (savedCalcs) {
+      const parsed = JSON.parse(savedCalcs);
+      setCalculations(recalculateDailySequences(parsed));
+    }
     if (savedNotes) setNotes(JSON.parse(savedNotes));
     if (savedChallan) setDefaultChallan(parseInt(savedChallan) || 601);
     if (savedLang) setLanguage(savedLang as 'bn' | 'en');
     if (savedUser) setCurrentUser(savedUser);
     if (savedRegUsers) setRegisteredUsers(JSON.parse(savedRegUsers));
     if (savedVisibility) setReceiptVisibility(JSON.parse(savedVisibility));
+
+    if (savedTheme === 'dark') {
+      setDarkMode(true);
+      document.documentElement.classList.add('dark');
+    } else {
+      setDarkMode(false);
+      document.documentElement.classList.remove('dark');
+    }
   }, []);
+
+  const toggleDarkMode = () => {
+    const nextVal = !darkMode;
+    setDarkMode(nextVal);
+    if (nextVal) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('as_enterprise_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('as_enterprise_theme', 'light');
+    }
+  };
 
   // Save changes to localStorage
   useEffect(() => {
@@ -274,18 +370,27 @@ export default function App() {
       ...calc,
       createdBy: currentUser
     };
-    setCalculations([newCalc, ...calculations]);
+    const updated = recalculateDailySequences([newCalc, ...calculations]);
+    setCalculations(updated);
+
+    // Speak Bengali TTS for the new sequence Get Entry number
+    const addedCalc = updated.find(c => c.id === newCalc.id);
+    if (addedCalc && addedCalc.getEntryNo) {
+      speakGetEntryBengali(addedCalc.getEntryNo);
+    }
   };
 
   const deleteCalculation = (id: string) => {
     const confirmation = language === 'bn' ? 'আপনি কি এই রেকর্ডটি মুছে ফেলতে লজ্জিত?' : 'Are you sure you want to delete this record?';
     if (confirm(confirmation)) {
-      setCalculations(calculations.filter(c => c.id !== id));
+      const remaining = calculations.filter(c => c.id !== id);
+      setCalculations(recalculateDailySequences(remaining));
     }
   };
 
   const editCalculation = (updated: Calculation) => {
-    setCalculations(calculations.map(c => c.id === updated.id ? updated : c));
+    const nextList = calculations.map(c => c.id === updated.id ? updated : c);
+    setCalculations(recalculateDailySequences(nextList));
   };
 
   const addNote = (note: Note) => {
@@ -372,6 +477,16 @@ export default function App() {
     });
   }, [scopedCalculations, dateFilter]);
 
+  const searchedCalculations = useMemo(() => {
+    if (!historySearchQuery.trim()) {
+      return filteredCalculations;
+    }
+    const query = historySearchQuery.toLowerCase();
+    return filteredCalculations.filter(calc => 
+      calc.sellerName.toLowerCase().includes(query)
+    );
+  }, [filteredCalculations, historySearchQuery]);
+
   const stats = useMemo(() => {
     return filteredCalculations.reduce((acc, curr) => ({
       totalKg: acc.totalKg + curr.totalKg,
@@ -380,12 +495,17 @@ export default function App() {
     }), { totalKg: 0, totalMon: 0, totalPrice: 0 });
   }, [filteredCalculations]);
 
+  const todayCalculationsCount = useMemo(() => {
+    const startOfDay = new Date().setHours(0, 0, 0, 0);
+    return calculations.filter(c => c.timestamp >= startOfDay).length;
+  }, [calculations]);
+
   // Active translations
   const t = translations[language];
 
   // CSV Sheet Exporter (Excel support)
   const handleExportCSV = () => {
-    if (filteredCalculations.length === 0) {
+    if (searchedCalculations.length === 0) {
       alert(language === 'bn' ? 'কোনো হিসাবের রেকর্ড পাওয়া যায়নি রপ্তানি করতে!' : 'No records found to export!');
       return;
     }
@@ -394,7 +514,7 @@ export default function App() {
       ? ['তারিখ', 'চালান নং', 'বিক্রেতা নাম', 'মোট ওজন (কেজি)', 'মন ধরণ', 'রূপান্তরিত ওজন', 'দর (টাকা)', 'সর্বমোট বিল (টাকা)', 'অপারেটর']
       : ['Date', 'Challan No', 'Seller Name', 'Total Weight (KG)', 'Mon Type', 'Converted Weight', 'Rate', 'Total Paid', 'Operator'];
 
-    const rows = filteredCalculations.map(calc => {
+    const rows = searchedCalculations.map(calc => {
       const monCount = Math.floor(calc.totalKg / calc.monType);
       const extraKg = calc.totalKg % calc.monType;
       const dateStr = new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US');
@@ -431,7 +551,7 @@ export default function App() {
 
   // PDF / Direct Report Printing
   const handlePrintPDF = () => {
-    if (filteredCalculations.length === 0) {
+    if (searchedCalculations.length === 0) {
       alert(language === 'bn' ? 'প্রিন্ট করার জন্য কোনো হিসাবের রেকর্ড নেই!' : 'No records found to print!');
       return;
     }
@@ -443,7 +563,7 @@ export default function App() {
       ? (dateFilter === 'today' ? 'আজকের' : dateFilter === 'yesterday' ? 'গতকালের' : dateFilter === '7days' ? 'গত ৭ দিনের' : 'গত ৩০ দিনের')
       : (dateFilter === 'today' ? 'Today\'s' : dateFilter === 'yesterday' ? 'Yesterday\'s' : dateFilter === '7days' ? 'Last 7 Days\'' : 'Last 30 Days\'');
 
-    const tableRows = filteredCalculations.map(calc => {
+    const tableRows = searchedCalculations.map(calc => {
       const monCount = Math.floor(calc.totalKg / calc.monType);
       const extraKg = calc.totalKg % calc.monType;
       return `
@@ -544,16 +664,16 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 selection:bg-yellow-200">
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 selection:bg-yellow-200 transition-colors duration-200">
       {/* Dynamic Header */}
-      <header className="bg-yellow-400 text-black shadow-md sticky top-0 z-50">
+      <header className="bg-yellow-400 dark:bg-slate-900 text-black dark:text-slate-100 dark:border-b dark:border-slate-800 shadow-md sticky top-0 z-50 transition-all">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center justify-between h-14">
             <div className="flex items-center gap-2">
-              <Building className="w-6 h-6 text-slate-900 animate-pulse" />
+              <Building className="w-6 h-6 text-slate-900 dark:text-yellow-400 animate-pulse" />
               <div>
                 <h1 className="text-sm md:text-base font-black tracking-tight uppercase leading-none">{t.title}</h1>
-                <p className="text-[9px] font-bold text-slate-800 tracking-wider uppercase hidden sm:block mt-0.5">{t.subtitle}</p>
+                <p className="text-[9px] font-bold text-slate-800 dark:text-slate-400 tracking-wider uppercase hidden sm:block mt-0.5">{t.subtitle}</p>
               </div>
             </div>
             
@@ -563,6 +683,7 @@ export default function App() {
               <NavButton label={t.calculator} active={activeTab === 'calculator'} onClick={() => setActiveTab('calculator')} />
               <NavButton label={t.history} active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
               <NavButton label={t.note} active={activeTab === 'note'} onClick={() => setActiveTab('note')} />
+              <NavButton label={language === 'bn' ? 'এআই জিজ্ঞাসা' : 'AI Assistant'} active={activeTab === 'assistant'} onClick={() => setActiveTab('assistant')} />
               <NavButton label={t.settings} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
             </nav>
 
@@ -576,10 +697,31 @@ export default function App() {
                 <span className="max-w-[70px] truncate">{currentUser}</span>
               </button>
 
+              {/* Theme Toggle */}
+              <button
+                id="theme-toggle"
+                onClick={toggleDarkMode}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded text-[10px] font-extrabold text-slate-800 dark:text-slate-200 transition-all select-none active:scale-95"
+                title={language === 'bn' ? 'থিম পরিবর্তন করুন' : 'Toggle Dark/Light Theme'}
+              >
+                {darkMode ? (
+                  <>
+                    <Sun size={12} className="text-amber-500" />
+                    <span>{language === 'bn' ? 'লাইট' : 'Light'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon size={12} className="text-indigo-600" />
+                    <span>{language === 'bn' ? 'ডার্ক' : 'Dark'}</span>
+                  </>
+                )
+                }
+              </button>
+
               {/* Language Selector */}
               <button
                 onClick={toggleLanguage}
-                className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-300 rounded text-[10px] font-extrabold text-slate-800 transition-all select-none active:scale-95"
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded text-[10px] font-extrabold text-slate-800 dark:text-slate-200 transition-all select-none active:scale-95"
               >
                 <Languages size={12} className="text-green-600" />
                 <span>{language === 'bn' ? 'EN' : 'বাংলা'}</span>
@@ -596,6 +738,7 @@ export default function App() {
                   <option value="calculator">{t.calculator}</option>
                   <option value="history">{t.history}</option>
                   <option value="note">{t.note}</option>
+                  <option value="assistant">{language === 'bn' ? 'এআই জিজ্ঞাসা' : 'AI Assistant'}</option>
                   <option value="settings">{t.settings}</option>
                 </select>
               </div>
@@ -609,7 +752,7 @@ export default function App() {
         <AnimatePresence mode="wait">
           {activeTab === 'home' && (
             <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <HomeSection stats={stats} dateFilter={dateFilter} setDateFilter={setDateFilter} t={t} />
+              <HomeSection stats={stats} dateFilter={dateFilter} setDateFilter={setDateFilter} t={t} todayCount={todayCalculationsCount} language={language} />
             </motion.div>
           )}
           {activeTab === 'calculator' && (
@@ -627,13 +770,13 @@ export default function App() {
           {activeTab === 'history' && (
             <motion.div key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-4">
-                <div className="flex bg-white p-1 rounded shadow-sm border border-slate-200">
+                <div className="flex bg-white dark:bg-slate-900 p-1 rounded shadow-sm border border-slate-200 dark:border-slate-800">
                   {(['today', 'yesterday', '7days', '1month'] as DateFilter[]).map((f) => (
                     <button
                       key={f}
                       onClick={() => setDateFilter(f)}
                       className={`px-3 py-1.5 rounded text-[9px] font-black uppercase tracking-widest transition-all ${
-                        dateFilter === f ? 'bg-yellow-400 text-black shadow-sm' : 'text-slate-400 hover:bg-slate-50'
+                        dateFilter === f ? 'bg-yellow-400 text-black shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'
                       }`}
                     >
                       {f === 'today' ? (language === 'bn' ? 'আজ' : 'Today') 
@@ -664,13 +807,15 @@ export default function App() {
 
               {/* Calculations ledger */}
               <HistorySection 
-                calculations={filteredCalculations} 
+                calculations={searchedCalculations} 
                 onDelete={deleteCalculation} 
                 onEdit={editCalculation}
                 t={t}
                 language={language}
                 allCalculations={calculations} // to calculate list of users for filter
                 currentUser={currentUser}
+                searchQuery={historySearchQuery}
+                setSearchQuery={setHistorySearchQuery}
               />
             </motion.div>
           )}
@@ -679,22 +824,37 @@ export default function App() {
               <NoteSection notes={notes} onAdd={addNote} onDelete={deleteNote} t={t} />
             </motion.div>
           )}
+          {activeTab === 'assistant' && (
+            <motion.div key="assistant" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <AssistantSection 
+                calculations={calculations}
+                notes={notes}
+                onAddCalculation={addCalculation}
+                onDeleteCalculation={deleteCalculation}
+                onEditCalculation={editCalculation}
+                onAddNote={addNote}
+                onDeleteNote={deleteNote}
+                language={language}
+                currentUser={currentUser}
+              />
+            </motion.div>
+          )}
           {activeTab === 'settings' && (
-            <motion.div key="settings" className="bg-white p-6 md:p-8 rounded-xl shadow-sm border border-slate-200 font-sans">
+            <motion.div key="settings" className="bg-white dark:bg-slate-900 p-6 md:p-8 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 font-sans transition-all">
               <div className="flex flex-col lg:flex-row gap-8">
                 {/* Visual Visibility Setup Panel */}
                 <div className="flex-1 space-y-6">
                   <div>
-                    <h2 className="text-xl font-black text-slate-800 mb-2">{t.settingsTitle}</h2>
-                    <p className="text-xs text-slate-500 mb-6">
+                    <h2 className="text-xl font-black text-slate-800 dark:text-slate-100 mb-2">{t.settingsTitle}</h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-6">
                       {language === 'bn' 
                         ? 'হিসাব মনিটর এবং মেমো ইমেজে (ডাউনলোডের সময়) কোন কোন উপাদানসমূহ দৃশ্যমান থাকবে তা এখান থেকে চালু বা বন্ধ করুন।' 
                         : 'Configure display items to show or hide in both real-time preview monitor monitor and generated PNG bills.'}
                     </p>
                   </div>
 
-                  <div className="space-y-4 bg-slate-50 p-6 rounded-xl border border-slate-200">
-                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider mb-2">
+                  <div className="space-y-4 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-850">
+                    <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider mb-2">
                       {language === 'bn' ? 'মেমো এবং ইমেজ কন্টেন্ট প্রদর্শন সেটিংস' : 'Memo & Image Visibility Controls'}
                     </h3>
 
@@ -748,22 +908,22 @@ export default function App() {
                   </div>
 
                   {/* General settings default challan */}
-                  <div className="p-6 bg-yellow-50 rounded-lg border border-yellow-100 max-w-xl">
-                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider mb-2">
+                  <div className="p-6 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg border border-yellow-100 dark:border-yellow-900/30 max-w-xl">
+                    <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider mb-2">
                        {language === 'bn' ? 'চালান নং ক্রমিক নির্ধারণ' : 'Challan Sequence Bootstrap'}
                     </h3>
-                    <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 leading-relaxed">
                       {language === 'bn' 
                         ? 'ডিফল্ট চালানের নম্বরটি নির্ধারণ করুন। আপনার পূর্বের কোনো হিসাব না থাকলে অ্যাপ এখান থেকে আপনার সিরিয়াল গণনা শুরু করবে।' 
                         : 'Specify target startup serial. Automatic increment logic relies on this index if history is cleared.'}
                     </p>
                     <div className="max-w-xs">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase ml-1 mb-1 block">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
                         {language === 'bn' ? 'ডিফল্ট শুরু চালান নং' : 'Fallback Next Challan'}
                       </label>
                       <input 
                         type="number" 
-                        className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded text-sm font-black focus:ring-2 focus:ring-yellow-400 focus:border-yellow-400 outline-none"
+                        className="w-full px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-sm font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 focus:border-yellow-400 outline-none"
                         value={defaultChallan}
                         placeholder="e.g. 601"
                         onChange={e => {
@@ -786,13 +946,13 @@ export default function App() {
                 </div>
 
                 {/* Operator Login Panel */}
-                <div className="w-full lg:w-96 bg-slate-50 p-6 rounded-xl border border-slate-200">
+                <div className="w-full lg:w-96 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-850">
                   <div className="mb-6">
                     <div className="flex items-center gap-2 mb-2">
-                      <User className="text-yellow-600" size={20} />
-                      <h3 className="text-md font-black text-slate-800">{t.loginTitle}</h3>
+                      <User className="text-yellow-600 dark:text-yellow-500" size={20} />
+                      <h3 className="text-md font-black text-slate-800 dark:text-slate-100">{t.loginTitle}</h3>
                     </div>
-                    <p className="text-xs text-slate-500 leading-relaxed">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                       {language === 'bn' 
                         ? 'কোনো কঠিন ভেরিফিকেশন বা সেশন ফি নেই। যেকোনো নাম দিয়ে সাথে সাথে অ্যাকাউন্ট খুলে প্রতিটি হিসাব সরাসরি আপনার নামে সেভ করতে পারেন।' 
                         : 'No heavy verification sequence. Simply logon as any username and calculations will be indexed under your identity.'}
@@ -800,27 +960,27 @@ export default function App() {
                   </div>
 
                   {currentUser !== 'Guest' ? (
-                    <div className="bg-white p-5 rounded-lg border border-slate-200 space-y-4 shadow-sm">
-                      <p className="text-xs text-slate-400 uppercase font-black tracking-wider">{t.loggedInAs}</p>
+                    <div className="bg-white dark:bg-slate-900 p-5 rounded-lg border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm">
+                      <p className="text-xs text-slate-400 dark:text-slate-500 uppercase font-black tracking-wider">{t.loggedInAs}</p>
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-full bg-slate-900 border-2 border-yellow-400 flex items-center justify-center text-white font-black text-base">
                           {currentUser.substring(0, 2).toUpperCase()}
                         </div>
                         <div>
-                          <p className="font-black text-sm text-slate-800">{currentUser}</p>
-                          <p className="text-[10px] text-green-600 font-bold uppercase tracking-widest bg-green-50 px-2 py-0.5 rounded border border-green-100 inline-block mt-0.5">
+                          <p className="font-black text-sm text-slate-800 dark:text-slate-100">{currentUser}</p>
+                          <p className="text-[10px] text-green-600 font-bold uppercase tracking-widest bg-green-50 dark:bg-green-950/40 px-2 py-0.5 rounded border border-green-100 dark:border-green-900/30 inline-block mt-0.5">
                             {currentUser.toLowerCase() === 'admin' ? 'ADMIN / এডমিন' : 'ACTIVE SESSION'}
                           </p>
                         </div>
                       </div>
 
-                      <div className="pt-2 border-t border-slate-100 flex justify-between items-center">
-                        <p className="text-[10px] text-slate-400 italic">
+                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center">
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 italic">
                           {language === 'bn' ? 'সকল চালানের হিসাব সংরক্ষিত হচ্ছে' : 'Logs tracked under your name'}
                         </p>
                         <button 
                           onClick={handleLogout}
-                          className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-[10px] font-black uppercase rounded tracking-wider transition-all"
+                          className="px-3 py-1.5 bg-red-100 hover:bg-red-200 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900 text-red-700 text-[10px] font-black uppercase rounded tracking-wider transition-all"
                         >
                           {language === 'bn' ? 'লগআউট' : 'Sign Out'}
                         </button>
@@ -829,29 +989,29 @@ export default function App() {
                   ) : (
                     <form onSubmit={handleLogin} className="space-y-4">
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 block mb-1">{t.usernameText}</label>
+                        <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 block mb-1">{t.usernameText}</label>
                         <input 
                           type="text"
                           required
                           placeholder="e.g. Sales"
                           value={authName}
                           onChange={e => setAuthName(e.target.value)}
-                          className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                          className="w-full px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 block mb-1">{t.passwordText}</label>
+                        <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 block mb-1">{t.passwordText}</label>
                         <input 
                           type="password"
                           required
                           placeholder="••••••"
                           value={authPassword}
                           onChange={e => setAuthPassword(e.target.value)}
-                          className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                          className="w-full px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                         />
                       </div>
 
-                      <p className="text-[9px] leading-relaxed text-slate-400 italic">
+                      <p className="text-[9px] leading-relaxed text-slate-400 dark:text-slate-500 italic">
                         * {language === 'bn' 
                           ? 'নতুন নাম দিলে স্বয়ংক্রিয়ভাবে একটি অ্যাকাউন্ট তৈরি হয়ে পরবর্তী কাজের জন্য পাসওয়ার্ড দিয়ে লক থাকবে।' 
                           : 'Entering a new username automatically registers you. Keep passwords remembered for return logins.'}
@@ -859,7 +1019,7 @@ export default function App() {
 
                       <button 
                         type="submit"
-                        className="w-full py-2.5 bg-slate-900 hover:bg-black text-yellow-400 font-extrabold uppercase text-[10px] tracking-widest rounded transition-all active:scale-95 shadow-sm"
+                        className="w-full py-2.5 bg-slate-900 hover:bg-black dark:bg-yellow-400 dark:hover:bg-yellow-500 dark:text-slate-950 text-yellow-400 font-extrabold uppercase text-[10px] tracking-widest rounded transition-all active:scale-95 shadow-sm"
                       >
                         {t.loginText} / {t.registerText}
                       </button>
@@ -873,9 +1033,9 @@ export default function App() {
       </main>
 
       {/* Footer Disclaimer */}
-      <footer className="mt-12 border-t border-slate-200 mb-8 pt-8 px-4">
+      <footer className="mt-12 border-t border-slate-200 dark:border-slate-800 mb-8 pt-8 px-4">
         <div className="max-w-4xl mx-auto text-center">
-          <p className="text-xs font-bold text-slate-600 leading-relaxed bg-white p-4 rounded-lg shadow-sm border border-slate-100 italic">
+          <p className="text-xs font-bold text-slate-600 dark:text-slate-400 leading-relaxed bg-white dark:bg-slate-900 p-4 rounded-lg shadow-sm border border-slate-100 dark:border-slate-800 italic">
             <span className="text-red-600 font-black not-italic mr-1">বিশেষ দ্রষ্টব্য (AS Warning):</span>
              {t.sizeWarning}
           </p>
@@ -893,8 +1053,8 @@ function NavButton({ label, active, onClick }: { label: string, active: boolean,
       onClick={onClick}
       className={`h-full px-6 text-[11px] font-black uppercase tracking-widest transition-all ${
         active 
-          ? 'bg-black text-yellow-400' 
-          : 'text-black hover:bg-yellow-500'
+          ? 'bg-black text-yellow-400 dark:bg-slate-800 dark:text-yellow-400' 
+          : 'text-black hover:bg-yellow-500 dark:text-slate-300 dark:hover:bg-slate-800'
       }`}
     >
       {label}
@@ -911,13 +1071,13 @@ function VisibilityToggle({ label, value, onChange }: { label: string, value: bo
       onClick={onChange}
       className={`flex items-center justify-between p-3 rounded-lg border text-xs font-bold transition-all select-none active:scale-98 ${
         value 
-          ? 'bg-white border-yellow-400 text-slate-800 shadow-sm' 
-          : 'bg-slate-100 border-slate-200 text-slate-400'
+          ? 'bg-white dark:bg-slate-900 border-yellow-400 text-slate-800 dark:text-slate-100 shadow-sm' 
+          : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500'
       }`}
     >
       <span>{label}</span>
       <div className={`w-4 h-4 rounded flex items-center justify-center transition-all ${
-        value ? 'bg-yellow-400 text-black' : 'bg-slate-200 text-slate-400'
+        value ? 'bg-yellow-400 text-black' : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500'
       }`}>
         {value && <Check size={11} strokeWidth={3} />}
       </div>
@@ -927,23 +1087,25 @@ function VisibilityToggle({ label, value, onChange }: { label: string, value: bo
 
 // --- Home ---
 
-function HomeSection({ stats, dateFilter, setDateFilter, t }: { 
+function HomeSection({ stats, dateFilter, setDateFilter, t, todayCount, language }: { 
   stats: any, 
   dateFilter: DateFilter, 
   setDateFilter: (f: DateFilter) => void,
-  t: any
+  t: any,
+  todayCount: number,
+  language: 'bn' | 'en'
 }) {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
-        <h2 className="text-xl md:text-2xl font-black text-slate-800 tracking-tight uppercase">{t.summary}</h2>
-        <div className="flex bg-white p-1 rounded shadow-sm border border-slate-200">
+        <h2 className="text-xl md:text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight uppercase">{t.summary}</h2>
+        <div className="flex bg-white dark:bg-slate-900 p-1 rounded shadow-sm border border-slate-200 dark:border-slate-800">
           {(['today', 'yesterday', '7days', '1month'] as DateFilter[]).map((f) => (
             <button
               key={f}
               onClick={() => setDateFilter(f)}
               className={`px-3 py-1.5 rounded text-[9px] font-black uppercase tracking-widest transition-all ${
-                dateFilter === f ? 'bg-yellow-400 text-black shadow-sm' : 'text-slate-400 hover:bg-slate-50'
+                dateFilter === f ? 'bg-yellow-400 text-black shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'
               }`}
             >
               {f === 'today' ? (t.home === 'হোম' ? 'আজ' : 'Today') 
@@ -955,22 +1117,34 @@ function HomeSection({ stats, dateFilter, setDateFilter, t }: {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <CompactStatCard label={t.totalKgLabel} value={stats.totalKg.toLocaleString()} unit="KG" bg="bg-white" />
         <CompactStatCard label={t.totalMonLabel} value={stats.totalMon.toFixed(2)} unit="MON" bg="bg-white" />
         <CompactStatCard label={t.totalPriceLabel} value={`৳${Math.round(stats.totalPrice).toLocaleString()}`} unit="BDT" bg="bg-yellow-400" text="text-black" />
+        <CompactStatCard 
+          label={language === 'bn' ? "আজকের মোট গেট এন্ট্রি" : "Today's Get Entries"} 
+          value={language === 'bn' ? toBengaliDigits(todayCount) : todayCount.toString()} 
+          unit={language === 'bn' ? "টি" : "ENTRIES"} 
+          bg="bg-indigo-600 dark:bg-indigo-950/40" 
+          text="text-white" 
+        />
       </div>
     </div>
   );
 }
 
-function CompactStatCard({ label, value, unit, bg, text = 'text-slate-800' }: { label: string, value: string, unit: string, bg: string, text?: string }) {
+function CompactStatCard({ label, value, unit, bg, text = 'text-slate-800 dark:text-slate-100' }: { label: string, value: string, unit: string, bg: string, text?: string }) {
+  const isDarkBg = bg.includes('bg-indigo') || bg.includes('bg-slate-900') || bg.includes('bg-black');
+  const finalBg = bg === 'bg-white' ? 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800' : bg;
+  const labelColor = isDarkBg ? 'text-indigo-200' : 'text-slate-400 dark:text-slate-500';
+  const unitColor = isDarkBg ? 'text-indigo-200 font-bold' : 'text-slate-400 font-bold';
+
   return (
-    <div className={`${bg} p-6 rounded-xl shadow-sm border border-slate-200`}>
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">{label}</p>
+    <div className={`${finalBg} p-6 rounded-xl shadow-sm border`}>
+      <p className={`text-[10px] font-black uppercase tracking-widest mb-2 ${labelColor}`}>{label}</p>
       <div className="flex items-baseline gap-2">
         <p className={`text-2xl font-black ${text}`}>{value}</p>
-        <p className="text-[10px] font-bold text-slate-400 uppercase">{unit}</p>
+        <p className={`text-[10px] uppercase ${unitColor}`}>{unit}</p>
       </div>
     </div>
   );
@@ -1138,16 +1312,18 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       ratePerMon: parseFloat(formData.ratePerMon)
     };
 
-    // Check duplicate
+    // Check duplicate saved today
+    const startOfDay = new Date().setHours(0, 0, 0, 0);
     const isDuplicate = calculations.some(c => 
+      c.timestamp >= startOfDay &&
       c.sellerName.trim().toLowerCase() === calculated.sellerName.trim().toLowerCase() && 
       c.totalKg === calculated.totalKg
     );
 
     if (isDuplicate) {
       const promptText = language === 'bn' 
-        ? `এগেইন সেইভ?\n\nএকই বিক্রেতার নাম ও পন্যের ওজন (${calculated.totalKg} KG) বিশিষ্ট হিসাব ইতিমধ্যে সেভ করা হয়েছে!` 
-        : `Save Duplicate Record?\n\nA calculation listing ${calculated.sellerName} at ${calculated.totalKg} KG already exists. Would you like to save this duplicate record?`;
+        ? `একই নাম এবং ওজনের একটি হিসাব আজ ইতিমধ্যে সেভ করা হয়েছে। আপনি কি নিশ্চিত?` 
+        : `An entry with the same name and weight has already been saved today. Are you sure?`;
       
       if (!confirm(promptText)) {
         return;
@@ -1197,15 +1373,17 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     }
 
     const enteredChallanNum = parseInt(minusFormData.challanNo) || 0;
+    const startOfDay = new Date().setHours(0, 0, 0, 0);
     const isDuplicate = calculations.some(c => 
+      c.timestamp >= startOfDay &&
       c.sellerName.trim().toLowerCase() === minusFormData.sellerName.trim().toLowerCase() && 
       c.totalKg === parseFloat(minusFormData.totalKg)
     );
 
     if (isDuplicate) {
       const promptText = language === 'bn' 
-        ? `এগেইন সেইভ?\n\nএকই বিক্রেতার নাম ও পন্যের ওজন (${minusFormData.totalKg} KG) বিশিষ্ট হিসাব ইতিমধ্যে সেভ করা হয়েছে!` 
-        : `Save Duplicate Record?\n\nA calculation listing ${minusFormData.sellerName} at ${minusFormData.totalKg} KG already exists. Would you like to save this duplicate record?`;
+        ? `একই নাম এবং ওজনের একটি হিসাব আজ ইতিমধ্যে সেভ করা হয়েছে। আপনি কি নিশ্চিত?` 
+        : `An entry with the same name and weight has already been saved today. Are you sure?`;
       
       if (!confirm(promptText)) {
         return;
@@ -1501,11 +1679,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
 
   return (
     <div className="space-y-6">
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-6 border-b border-slate-100 pb-3">
+      <div className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 transition-all">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6 border-b border-slate-100 dark:border-slate-800 pb-3">
           <div className="flex items-center gap-2">
             <CalcIcon className="text-yellow-500 w-5 h-5 animate-bounce" />
-            <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">{t.calculatorSectionTitle}</h3>
+            <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider">{t.calculatorSectionTitle}</h3>
           </div>
           <button
             type="button"
@@ -1515,8 +1693,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
             }}
             className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all select-none active:scale-95 flex items-center gap-1.5 ${
               isMinusMode 
-                ? 'bg-rose-100 text-rose-700 border border-rose-300' 
-                : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
+                ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-900/40' 
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
             }`}
           >
             <span>{isMinusMode ? "✕ [সাধারণ হিসাব]" : "⚖ [মাইনস ক্যালকুলেট]"}</span>
@@ -1528,37 +1706,37 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
             {/* Horizontal Input Row aligned equally */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end mb-6">
               <div className="md:col-span-3">
-                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.sellerName}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.sellerName}</label>
                 <input 
                   type="text" 
                   placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
-                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                   value={formData.sellerName}
                   onChange={e => setFormData({ ...formData, sellerName: e.target.value })}
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.totalWeight}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.totalWeight}</label>
                 <input 
                   type="number" 
                   placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                   value={formData.totalKg}
                   onChange={e => setFormData({ ...formData, totalKg: e.target.value })}
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.challanNum}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.challanNum}</label>
                 <input 
                   type="number" 
                   placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 text-rose-600 outline-none"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
                   value={formData.challanNo}
                   onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
                 />
               </div>
               <div className="md:col-span-3">
-                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.monSystem}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.monSystem}</label>
                 <div className="flex gap-1 h-11">
                   {[40, 41, 42, 43].map(type => (
                     <button
@@ -1568,7 +1746,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                       className={`flex-1 rounded text-[10px] font-black transition-all border-2 ${
                         formData.monType === type 
                           ? 'bg-green-600 text-white border-green-600 shadow-sm' 
-                          : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'
+                          : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700'
                       }`}
                     >
                       {type} KG
@@ -1577,11 +1755,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 </div>
               </div>
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">{t.ratePerMon}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.ratePerMon}</label>
                 <input 
                   type="number" 
                   placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                   value={formData.ratePerMon}
                   onChange={e => setFormData({ ...formData, ratePerMon: e.target.value })}
                 />
@@ -1592,17 +1770,17 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
               {/* Allow manual custom sequential check or bypass */}
               <div className="flex items-center">
                 {showChallanWarning ? (
-                  <label className="flex items-center gap-2 bg-red-50 text-red-950 px-3 py-1.5 rounded border border-red-200 text-[10px] font-bold cursor-pointer select-none active:scale-95 shadow-sm">
+                  <label className="flex items-center gap-2 bg-red-50 dark:bg-red-950/20 text-red-950 dark:text-red-400 px-3 py-1.5 rounded border border-red-200 dark:border-red-900/30 text-[10px] font-bold cursor-pointer select-none active:scale-95 shadow-sm">
                     <input 
                       type="checkbox" 
                       checked={allowSerialBypass}
                       onChange={e => setAllowSerialBypass(e.target.checked)}
                       className="rounded border-red-300 text-red-600 focus:ring-red-400 accent-red-600 cursor-pointer"
                     />
-                    <span className="leading-none text-red-700 font-extrabold">{t.serialBypass}</span>
+                    <span className="leading-none text-red-700 dark:text-red-400 font-extrabold">{t.serialBypass}</span>
                   </label>
                 ) : (
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">
                     ✔ {language === 'bn' ? `পরবর্তী প্রত্যাশিত ওয়ান-ক্লিক চালান নম্বর হলো #${expectedNextChallan}` : `Correct sequence predicts Challan #${expectedNextChallan}`}
                   </p>
                 )}
@@ -1620,10 +1798,10 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
 
             {/* Live error/suggestion notification row */}
             {showChallanWarning && (
-              <div className="mt-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-bold flex items-center gap-2 animate-pulse">
+              <div className="mt-4 p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/30 text-rose-800 dark:text-rose-400 rounded-lg text-xs font-bold flex items-center gap-2 animate-pulse">
                 <span>⚠️</span>
                 <p>
-                  {t.challanSuggested} <span className="font-extrabold text-rose-700 bg-white px-2 py-0.5 rounded shadow-sm">#{expectedNextChallan}</span>
+                  {t.challanSuggested} <span className="font-extrabold text-rose-700 bg-white dark:bg-slate-900 px-2 py-0.5 rounded shadow-sm">#{expectedNextChallan}</span>
                 </p>
               </div>
             )}
@@ -1631,50 +1809,50 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
         ) : (
           <div className="space-y-6">
             {/* Toggle bar inside for inputs of minus calculate */}
-            <div className="bg-slate-50 p-4 rounded-lg border border-slate-150 space-y-4">
+            <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-lg border border-slate-150 dark:border-slate-800 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                     {language === 'bn' ? "বিক্রেতার নাম" : "Seller Name"}
                   </label>
                   <input 
                     type="text" 
                     placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
-                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-bold focus:ring-2 focus:ring-yellow-400 outline-none"
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                     value={minusFormData.sellerName}
                     onChange={e => setMinusFormData({ ...minusFormData, sellerName: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                     {language === 'bn' ? "মোট ওজন (কেজি)" : "Total Weight (KG)"}
                   </label>
                   <input 
                     type="number" 
                     placeholder="0"
-                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                     value={minusFormData.totalKg}
                     onChange={e => setMinusFormData({ ...minusFormData, totalKg: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                     {language === 'bn' ? "চালান নং" : "Challan No"}
                   </label>
                   <input 
                     type="number" 
                     placeholder="0"
-                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black text-rose-600 focus:ring-2 focus:ring-yellow-400 outline-none"
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
                     value={minusFormData.challanNo}
                     onChange={e => setMinusFormData({ ...minusFormData, challanNo: e.target.value })}
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200 dark:border-slate-800">
                 {/* Switch between weight deduction and target price */}
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-2 block">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-2 block">
                     {language === 'bn' ? "কর্তন পদ্ধতি নির্বাচন করুন" : "Select Deduction Input Mode"}
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -1683,8 +1861,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                       onClick={() => setMinusFormData({ ...minusFormData, activeInput: 'weight' })}
                       className={`h-10 rounded text-xs font-bold transition-all border ${
                         minusFormData.activeInput === 'weight'
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
+                          ? 'bg-slate-900 dark:bg-slate-800 text-white border-slate-900 dark:border-slate-750 shadow-sm'
+                          : 'bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300'
                       }`}
                     >
                       {language === 'bn' ? "কর্তন কেজি সরাসরি" : "Minus Weight (KG)"}
@@ -1694,8 +1872,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                       onClick={() => setMinusFormData({ ...minusFormData, activeInput: 'targetPrice' })}
                       className={`h-10 rounded text-xs font-bold transition-all border ${
                         minusFormData.activeInput === 'targetPrice'
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
+                          ? 'bg-slate-900 dark:bg-slate-800 text-white border-slate-900 dark:border-slate-750 shadow-sm'
+                          : 'bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300'
                       }`}
                     >
                       {language === 'bn' ? "কাঙ্ক্ষিত মনের দাম" : "Target Mon Price"}
@@ -1706,26 +1884,26 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 <div>
                   {minusFormData.activeInput === 'weight' ? (
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-2 block">
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-2 block">
                         {language === 'bn' ? "কর্তন কেজি" : "Minus Weight (KG)"}
                       </label>
                       <input
                         type="number"
                         placeholder={language === 'bn' ? "কর্তনযোগ্য ওজন লিখুন" : "e.g. 20"}
-                        className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black text-rose-600 focus:ring-2 focus:ring-yellow-400 outline-none"
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white"
                         value={minusFormData.minusWeight}
                         onChange={e => setMinusFormData({ ...minusFormData, minusWeight: e.target.value })}
                       />
                     </div>
                   ) : (
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-2 block">
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-2 block">
                         {language === 'bn' ? "কাঙ্ক্ষিত মনের দাম" : "Target Mon Price (৳)"}
                       </label>
                       <input
                         type="number"
                         placeholder={language === 'bn' ? "কাঙ্ক্ষিত মনের দাম লিখুন" : "e.g. 140"}
-                        className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black text-emerald-600 focus:ring-2 focus:ring-yellow-400 outline-none"
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-emerald-600 dark:text-emerald-400 focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white"
                         value={minusFormData.targetMonPrice}
                         onChange={e => setMinusFormData({ ...minusFormData, targetMonPrice: e.target.value })}
                       />
@@ -1734,9 +1912,9 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200 dark:border-slate-800">
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                     {language === 'bn' ? "মন সিস্টেম নির্বাচন" : "Mon System Selection"}
                   </label>
                   <div className="flex gap-1 h-10">
@@ -1748,7 +1926,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                         className={`flex-1 rounded text-[10px] font-black transition-all border ${
                           minusFormData.monType === type 
                             ? 'bg-green-600 text-white border-green-600 shadow-sm' 
-                            : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'
+                            : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
                         }`}
                       >
                         {type} KG
@@ -1758,13 +1936,13 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1 mb-1 block">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                     {language === 'bn' ? "নির্ধারিত দর (প্রতি মণ)" : "Regular Price per Mon (৳)"}
                   </label>
                   <input 
                     type="number" 
                     placeholder="0"
-                    className="w-full h-10 px-3 bg-white border border-slate-200 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none"
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white"
                     value={minusFormData.ratePerMon}
                     onChange={e => setMinusFormData({ ...minusFormData, ratePerMon: e.target.value })}
                   />
@@ -1886,39 +2064,39 @@ function CompactReceipt({
   rateRaw
 }: CompactReceiptProps) {
   return (
-    <div className={`bg-white border-4 border-yellow-400 rounded-xl p-6 shadow-xl font-mono text-xs transition-all relative overflow-hidden ${!isCalculated ? 'opacity-70' : ''}`}>
+    <div className={`bg-white dark:bg-slate-900 border-4 border-yellow-400 dark:border-yellow-500 rounded-xl p-6 shadow-xl font-mono text-xs transition-all relative overflow-hidden text-slate-900 dark:text-slate-100 ${!isCalculated ? 'opacity-70' : ''}`}>
       
       {/* Decorative Stamp badge */}
-      <div className="absolute top-10 right-4 transform rotate-12 border-2 border-dashed border-red-500 text-red-500 text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-widest select-none bg-white/80">
+      <div className="absolute top-10 right-4 transform rotate-12 border-2 border-dashed border-red-500 text-red-500 text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-widest select-none bg-white/80 dark:bg-slate-800/80">
         {isCalculated ? (language === 'bn' ? 'প্রিভিউ রেডি' : 'READY') : (language === 'bn' ? 'হিসাব করুন' : 'UNSAVED')}
       </div>
 
-      <div className="text-center border-b-2 border-slate-100 pb-4 mb-4">
-        <h4 className="text-lg font-black uppercase text-black">A. S Enterprise</h4>
-        <p className="font-bold text-slate-500 text-[10px]">Abu Saleh | 01766761877</p>
+      <div className="text-center border-b-2 border-slate-100 dark:border-slate-800 pb-4 mb-4">
+        <h4 className="text-lg font-black uppercase text-black dark:text-white">A. S Enterprise</h4>
+        <p className="font-bold text-slate-500 dark:text-slate-400 text-[10px]">Abu Saleh | 01766761877</p>
       </div>
 
       <div className="space-y-2 mb-6">
         {receiptVisibility.challanNo && (
           <div className="flex justify-between items-center">
-            <span className="font-bold text-slate-400">Challan / মেমো নং:</span>
-            <span className="font-black text-rose-600">#{formData.challanNo || '---'}</span>
+            <span className="font-bold text-slate-400 dark:text-slate-500">Challan / মেমো নং:</span>
+            <span className="font-black text-rose-600 dark:text-rose-400">#{formData.challanNo || '---'}</span>
           </div>
         )}
         {receiptVisibility.sellerName && (
           <div className="flex justify-between">
-            <span className="font-bold text-slate-400">Seller / বিক্রেতা:</span>
-            <span className="font-black text-slate-900">{formData.sellerName || '---'}</span>
+            <span className="font-bold text-slate-400 dark:text-slate-500">Seller / বিক্রেতা:</span>
+            <span className="font-black text-slate-900 dark:text-slate-100">{formData.sellerName || '---'}</span>
           </div>
         )}
         {receiptVisibility.totalWeight && (
           <div className="space-y-1">
             <div className="flex justify-between">
-              <span className="font-bold text-slate-400">Total KG / ওজন:</span>
-              <span className="font-black text-slate-900">{formData.totalKg || '0'} KG</span>
+              <span className="font-bold text-slate-400 dark:text-slate-500">Total KG / ওজন:</span>
+              <span className="font-black text-slate-900 dark:text-slate-100">{formData.totalKg || '0'} KG</span>
             </div>
             {result.isMinusCalculated && result.deductedWeight !== undefined && (
-              <div className="flex justify-between text-rose-600 font-extrabold bg-rose-50/70 p-1.5 rounded border border-rose-100 text-[10px]">
+              <div className="flex justify-between text-rose-600 dark:text-rose-400 font-extrabold bg-rose-50/70 dark:bg-rose-950/20 p-1.5 rounded border border-rose-100 dark:border-rose-900/30 text-[10px]">
                 <span>Deduction / ওজন কর্তন:</span>
                 <span>-{result.deductedWeight.toFixed(1)} KG ({result.deductionPercentage?.toFixed(1)}%)</span>
               </div>
@@ -1927,16 +2105,16 @@ function CompactReceipt({
         )}
         {receiptVisibility.monSystem && (
           <div className="flex justify-between">
-            <span className="font-bold text-slate-400">Mon Type / মন সাইজ:</span>
-            <span className="font-black text-slate-900">{formData.monType} KG/Mon</span>
+            <span className="font-bold text-slate-400 dark:text-slate-500">Mon Type / মন সাইজ:</span>
+            <span className="font-black text-slate-900 dark:text-slate-100">{formData.monType} KG/Mon</span>
           </div>
         )}
         {receiptVisibility.totalResult && (
-          <div className="flex justify-between py-2 border-y border-dashed border-slate-200 mt-2 bg-yellow-50/50 px-1">
-            <span className="font-extrabold text-slate-800">
+          <div className="flex justify-between py-2 border-y border-dashed border-slate-200 dark:border-slate-800 mt-2 bg-yellow-50/50 dark:bg-yellow-950/20 px-1">
+            <span className="font-extrabold text-slate-800 dark:text-slate-200">
               {result.isMinusCalculated ? 'Net Weight / নিট ওজন:' : 'Converted / রূপান্তরিত:'}
             </span>
-            <span className="font-black text-base text-green-600">
+            <span className="font-black text-base text-green-600 dark:text-green-400">
               {result.monCount} মন {result.extraKg} কেজি
             </span>
           </div>
@@ -1944,11 +2122,11 @@ function CompactReceipt({
         {receiptVisibility.rate && (
           <div className="space-y-1">
             <div className="flex justify-between">
-              <span className="font-bold text-slate-400">{result.isMinusCalculated ? 'Regular Rate / নির্ধারিত দর:' : 'Rate / দর প্রতি মন:'}</span>
-              <span className="font-black text-slate-900">৳{result.isMinusCalculated ? result.ratePerMon : (rateRaw || '0')}</span>
+              <span className="font-bold text-slate-400 dark:text-slate-500">{result.isMinusCalculated ? 'Regular Rate / নির্ধারিত দর:' : 'Rate / দর প্রতি মন:'}</span>
+              <span className="font-black text-slate-900 dark:text-slate-100">৳{result.isMinusCalculated ? result.ratePerMon : (rateRaw || '0')}</span>
             </div>
             {result.isMinusCalculated && result.effectivePrice !== undefined && (
-              <div className="flex justify-between text-rose-600 font-extrabold text-[10px]">
+              <div className="flex justify-between text-rose-600 dark:text-rose-450 font-extrabold text-[10px]">
                 <span>Effective Rate / কর্তনকৃত দর:</span>
                 <span>৳{Math.round(result.effectivePrice)} /মন</span>
               </div>
@@ -1958,14 +2136,14 @@ function CompactReceipt({
       </div>
 
       {receiptVisibility.totalPayable && (
-        <div className="bg-slate-950 text-yellow-400 p-4 rounded-lg text-center mb-4 border border-slate-800 shadow-inner">
-          <p className="text-[10px] font-black uppercase tracking-widest mb-1 text-slate-400">{t.totalPayable}</p>
+        <div className="bg-slate-950 text-yellow-400 dark:text-yellow-500 p-4 rounded-lg text-center mb-4 border border-slate-800 shadow-inner">
+          <p className="text-[10px] font-black uppercase tracking-widest mb-1 text-slate-400 dark:text-slate-500">{t.totalPayable}</p>
           <p className="text-2xl font-black">৳{Math.round(result.price).toLocaleString()}</p>
         </div>
       )}
 
       {receiptVisibility.disclaimer && (
-        <p className="text-[9px] leading-relaxed text-slate-400 italic text-center px-1 border-t border-slate-100 pt-2 mb-4">
+        <p className="text-[9px] leading-relaxed text-slate-400 dark:text-slate-500 italic text-center px-1 border-t border-slate-100 dark:border-slate-800 pt-2 mb-4">
           {language === 'bn' 
             ? 'খড়ির সাইজ সর্বনিম্ন বের ৬" ইঞ্চি থেকে সর্বোচ্চ ৬৫" ও লম্বা ৩০" থেকে ৬০" ইঞ্চি পর্যন্ত নেওয়া হয়।'
             : 'Firewood log diameter must be min 6" and length restricted between 30" to 60".'}
@@ -1975,22 +2153,22 @@ function CompactReceipt({
       {/* Primary manual Action triggered to Save in ledger */}
       {isCalculated ? (
         <div className="space-y-2 mb-4">
-          <div className="w-full py-2.5 bg-green-50 border border-green-200 text-green-700 font-extrabold rounded text-center text-xs flex items-center justify-center gap-2 shadow-sm">
+          <div className="w-full py-2.5 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900/30 text-green-700 dark:text-green-400 font-extrabold rounded text-center text-xs flex items-center justify-center gap-2 shadow-sm">
             <span>✔ {language === 'bn' ? 'সফটওয়্যারে অটো সেভ করা হয়েছে!' : 'Auto-Saved of calculation successful!'}</span>
           </div>
         </div>
       ) : (
-        <div className="p-3 bg-slate-50 rounded text-center text-slate-400 text-[10px] font-bold border border-slate-100 mb-4 uppercase">
+        <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded text-center text-slate-400 dark:text-slate-500 text-[10px] font-bold border border-slate-100 dark:border-slate-800 mb-4 uppercase">
           {t.notCalculated}
         </div>
       )}
 
       {/* Save Image & Copy Trigger rows dynamically enabled */}
-      <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100">
+      <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
         <button
           onClick={onCopy}
           disabled={!isCalculated}
-          className="flex items-center justify-center gap-1.5 h-10 bg-slate-900 hover:bg-black text-white font-bold rounded uppercase text-[10px] tracking-wider transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-1.5 h-10 bg-slate-900 dark:bg-slate-800 hover:bg-black dark:hover:bg-slate-700 text-white font-bold rounded uppercase text-[10px] tracking-wider transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Copy size={13} />
           {t.copyText}
@@ -1998,7 +2176,7 @@ function CompactReceipt({
         <button
           onClick={onSaveImage}
           disabled={!isCalculated}
-          className="flex items-center justify-center gap-1.5 h-10 bg-yellow-400 hover:bg-yellow-500 text-slate-950 font-bold rounded uppercase text-[10px] tracking-wider transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-1.5 h-10 bg-yellow-400 hover:bg-yellow-500 text-slate-950 dark:text-slate-900 font-bold rounded uppercase text-[10px] tracking-wider transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Download size={13} />
           {t.saveImage}
@@ -2018,9 +2196,21 @@ interface HistorySectionProps {
   language: 'bn' | 'en';
   allCalculations: Calculation[];
   currentUser: string;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
 }
 
-function HistorySection({ calculations, onDelete, onEdit, t, language, allCalculations, currentUser }: HistorySectionProps) {
+function HistorySection({ 
+  calculations, 
+  onDelete, 
+  onEdit, 
+  t, 
+  language, 
+  allCalculations, 
+  currentUser,
+  searchQuery,
+  setSearchQuery
+}: HistorySectionProps) {
   const [operatorFilter, setOperatorFilter] = useState<string>('ALL');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
 
@@ -2044,31 +2234,54 @@ function HistorySection({ calculations, onDelete, onEdit, t, language, allCalcul
   }, [calculations, operatorFilter]);
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-      <div className="p-4 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
+      <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <div>
-          <h3 className="text-xs font-black uppercase tracking-widest text-slate-800">{t.calculationLogs}</h3>
-          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">
+          <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">{t.calculationLogs}</h3>
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
             {filteredList.length} {language === 'bn' ? 'টি রেকর্ড তালিকাভুক্ত' : 'records formatted'}
           </p>
         </div>
 
-        {/* Admin or Operator filter logic panel */}
-        {currentUser.toLowerCase() === 'admin' && operators.length > 0 && (
-          <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded border border-slate-200">
-            <span className="text-[10px] font-extrabold text-slate-500">{t.filterByOperator}:</span>
-            <select
-              value={operatorFilter}
-              onChange={e => setOperatorFilter(e.target.value)}
-              className="text-[10px] font-black border-none bg-transparent outline-none cursor-pointer"
-            >
-              <option value="ALL">🌟 {t.allUsers}</option>
-              {operators.map(op => (
-                <option key={op} value={op}>👤 {op}</option>
-              ))}
-            </select>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+          {/* Quick Search Bar */}
+          <div className="relative flex items-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 h-8">
+            <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 mr-2 shrink-0" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t.searchPlaceholder}
+              className="w-full sm:w-44 bg-transparent border-none text-[10px] font-bold text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 outline-none p-0 h-full"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="ml-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-[10px] font-black focus:outline-none"
+                title={language === 'bn' ? 'মুছে ফেলুন' : 'Clear search'}
+              >
+                ✕
+              </button>
+            )}
           </div>
-        )}
+
+          {/* Admin or Operator filter logic panel */}
+          {currentUser.toLowerCase() === 'admin' && operators.length > 0 && (
+            <div className="flex items-center gap-2 bg-white dark:bg-slate-900 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-800 h-8">
+              <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400">{t.filterByOperator}:</span>
+              <select
+                value={operatorFilter}
+                onChange={e => setOperatorFilter(e.target.value)}
+                className="text-[10px] font-black border-none bg-transparent dark:text-white outline-none cursor-pointer"
+              >
+                <option value="ALL">🌟 {t.allUsers}</option>
+                {operators.map(op => (
+                  <option key={op} value={op}>👤 {op}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
       </div>
       
       {filteredList.length === 0 ? (
@@ -2089,9 +2302,16 @@ function HistorySection({ calculations, onDelete, onEdit, t, language, allCalcul
                     <span className="text-[10px] font-black text-slate-400">
                       📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
                     </span>
-                    <span className="font-black text-rose-500 bg-rose-50 border border-rose-100 rounded px-1.5 py-0.5 text-[10px]">
-                      #{calc.challanNo !== undefined ? calc.challanNo : '---'}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-black text-rose-500 bg-rose-50 border border-rose-100 rounded px-1.5 py-0.5 text-[10px]">
+                        #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                      </span>
+                      {calc.getEntryNo !== undefined && (
+                        <span className="font-black text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-0.5 text-[9px]">
+                          {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   
                   <div className="grid grid-cols-2 gap-3 bg-slate-50/50 p-2.5 rounded-lg border border-slate-100">
@@ -2200,7 +2420,14 @@ function HistorySection({ calculations, onDelete, onEdit, t, language, allCalcul
                       <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
                         {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
                       </td>
-                      <td className="px-4 py-3 font-black text-rose-500">#{calc.challanNo !== undefined ? calc.challanNo : '---'}</td>
+                      <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
+                        <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
+                        {calc.getEntryNo !== undefined && (
+                          <div className="text-[9px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-0.5 inline-block font-black mt-1">
+                            {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-3 py-3 font-black text-slate-800">
                         {calc.sellerName}
                         {calc.isMinusCalculated && (
@@ -2472,20 +2699,20 @@ function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       <div className="md:col-span-1">
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="text-xs font-black uppercase mb-4 text-slate-400 tracking-wider font-sans">{t.addNote}</h3>
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 transition-all">
+          <h3 className="text-xs font-black uppercase mb-4 text-slate-400 dark:text-slate-500 tracking-wider font-sans">{t.addNote}</h3>
           <div className="space-y-4">
             <input 
               type="text" 
               placeholder={t.home === 'হোম' ? "শিরোনাম লিখুন" : "Memo Title"}
-              className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
+              className="w-full px-4 py-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-yellow-400"
               value={note.title}
               onChange={e => setNote({ ...note, title: e.target.value })}
             />
             <textarea 
               placeholder={t.home === 'হোম' ? "নোটের বিবরণ লিখুন..." : "Enter note details..."}
               rows={6}
-              className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded text-xs font-medium outline-none resize-none focus:ring-1 focus:ring-yellow-400"
+              className="w-full px-4 py-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-medium text-slate-900 dark:text-white outline-none resize-none focus:ring-1 focus:ring-yellow-400"
               value={note.content}
               onChange={e => setNote({ ...note, content: e.target.value })}
             />
@@ -2502,18 +2729,18 @@ function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: 
       
       <div className="md:col-span-2 space-y-4">
         {notes.length === 0 ? (
-          <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-xl text-slate-300 font-bold uppercase text-[10px]">{t.noNotes}</div>
+          <div className="p-12 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-300 dark:text-slate-600 font-bold uppercase text-[10px]">{t.noNotes}</div>
         ) : (
           notes.map(n => (
-            <div key={n.id} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <div key={n.id} className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 transition-all">
               <div className="flex justify-between items-start mb-2">
-                <h4 className="font-black text-base text-slate-800">{n.title}</h4>
-                <button onClick={() => onDelete(n.id)} className="text-slate-300 hover:text-red-600">
+                <h4 className="font-black text-base text-slate-800 dark:text-slate-100">{n.title}</h4>
+                <button onClick={() => onDelete(n.id)} className="text-slate-300 hover:text-red-600 dark:text-slate-600 dark:hover:text-red-500">
                   <Trash2 size={14} />
                 </button>
               </div>
-              <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{n.content}</p>
-              <p className="text-[9px] font-bold text-slate-400 uppercase mt-4 block">{new Date(n.timestamp).toLocaleString()}</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">{n.content}</p>
+              <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-4 block">{new Date(n.timestamp).toLocaleString()}</p>
             </div>
           ))
         )}
