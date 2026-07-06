@@ -34,3 +34,23 @@ input::-webkit-inner-spin-button {
 input[type=number] {
   -moz-appearance: textfield;
 }
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #print-memo-area, #print-memo-area * {
+    visibility: visible;
+  }
+  #print-memo-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
