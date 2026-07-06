@@ -30,6 +30,25 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import AssistantSection from './components/AssistantSection';
+import LoginScreen from './components/LoginScreen';
+import { auth, db } from './firebase';
+import { 
+  onAuthStateChanged, 
+  signOut,
+  User as FirebaseUser
+} from 'firebase/auth';
+import { 
+  collection, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  addDoc, 
+  deleteDoc, 
+  updateDoc, 
+  query, 
+  orderBy, 
+  onSnapshot 
+} from 'firebase/firestore';
 
 // --- Types ---
 
@@ -73,6 +92,17 @@ interface ReceiptVisibility {
   totalPayable: boolean;
   disclaimer: boolean;
   signatures: boolean;
+}
+
+interface CopyConfig {
+  sellerName: boolean;
+  challanNo: boolean;
+  getEntryNo: boolean;
+  totalWeight: boolean;
+  deduction: boolean;
+  netWeight: boolean;
+  rate: boolean;
+  totalPrice: boolean;
 }
 
 // --- Bengali numeral and text utility ---
@@ -272,7 +302,7 @@ const translations = {
 // --- Main Application ---
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('home');
+  const [activeTab, setActiveTab] = useState<Tab>('calculator');
   const [calculations, setCalculations] = useState<Calculation[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
@@ -281,13 +311,14 @@ export default function App() {
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
 
-  // Multi User Authentication state
+  // Firebase Authentication & Role state
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [userRole, setUserRole] = useState<'admin' | 'guest' | null>(null);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<string>('Guest');
-  const [authName, setAuthName] = useState<string>('');
-  const [authPassword, setAuthPassword] = useState<string>('');
-  const [registeredUsers, setRegisteredUsers] = useState<Record<string, string>>({
-    'admin': 'admin123'
-  });
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+
+  const lastSpokenId = useRef<string | null>(null);
 
   // Receipt Content On/Off Settings from user specification
   const [receiptVisibility, setReceiptVisibility] = useState<ReceiptVisibility>({
@@ -302,27 +333,132 @@ export default function App() {
     signatures: true
   });
 
+  // Copy Option On/Off Settings
+  const [copyConfig, setCopyConfig] = useState<CopyConfig>({
+    sellerName: true,
+    challanNo: true,
+    getEntryNo: true,
+    totalWeight: true,
+    deduction: true,
+    netWeight: true,
+    rate: true,
+    totalPrice: true
+  });
+
+  // Firebase Auth state listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setAuthLoading(true);
+        console.log("User UID:", user.uid);
+        setCurrentUserEmail(user.email);
+        try {
+          // Fetch role from Firestore "users" collection
+          const userDocRef = doc(db, 'users', user.uid);
+          const userDocSnap = await getDoc(userDocRef);
+          
+          let role: 'admin' | 'guest' = 'guest';
+          let displayName = user.email ? user.email.split('@')[0] : 'Operator';
+          
+          if (userDocSnap.exists()) {
+            const data = userDocSnap.data();
+            role = data.role === 'admin' ? 'admin' : 'guest';
+            if (data.name) displayName = data.name;
+          } else {
+            // Seed a default document in case of manual account setups
+            await setDoc(userDocRef, {
+              uid: user.uid,
+              email: user.email,
+              name: displayName,
+              role: 'guest',
+              createdAt: Date.now()
+            });
+          }
+          
+          console.log("Fetched Role:", role);
+          
+          setUserRole(role);
+          setCurrentUser(displayName);
+          
+          // Role-Based Routing
+          if (role === 'admin') {
+            setActiveTab('home'); // Admin Dashboard
+          } else {
+            setActiveTab('calculator'); // Daily Calculation Entry screen
+          }
+          
+          // ONLY set firebaseUser after the document is fully read and tab is routed!
+          setFirebaseUser(user);
+        } catch (err) {
+          console.error("Error fetching user role document: ", err);
+          const fallbackRole = 'guest';
+          console.log("Fetched Role:", fallbackRole);
+          setUserRole(fallbackRole);
+          setCurrentUser(user.email ? user.email.split('@')[0] : 'Guest');
+          setActiveTab('calculator');
+          setFirebaseUser(user);
+        } finally {
+          setAuthLoading(false);
+        }
+      } else {
+        setUserRole(null);
+        setCurrentUser('Guest');
+        setCurrentUserEmail(null);
+        setActiveTab('calculator');
+        setFirebaseUser(null);
+        setAuthLoading(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Subscribe to calculations collection in Firestore in real-time
+  useEffect(() => {
+    if (!firebaseUser) {
+      setCalculations([]);
+      return;
+    }
+
+    const q = query(collection(db, 'calculations'), orderBy('timestamp', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list: Calculation[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as Calculation);
+      });
+      const sorted = recalculateDailySequences(list);
+      setCalculations(sorted);
+
+      // Trigger Bengali TTS speech for the newest calculated entry safely
+      if (sorted.length > 0) {
+        const latest = sorted[0];
+        const isRecent = (Date.now() - latest.timestamp) < 10000; // within 10 seconds
+        if (isRecent && latest.id !== lastSpokenId.current && latest.getEntryNo) {
+          lastSpokenId.current = latest.id;
+          speakGetEntryBengali(latest.getEntryNo);
+        }
+      }
+    }, (error) => {
+      console.error("Firestore calculations sub error: ", error);
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser, userRole]);
+
   // Load Persisted Data
   useEffect(() => {
-    const savedCalcs = localStorage.getItem('as_enterprise_calcs');
     const savedNotes = localStorage.getItem('as_enterprise_notes');
     const savedChallan = localStorage.getItem('as_enterprise_default_challan');
     const savedLang = localStorage.getItem('as_enterprise_lang');
-    const savedUser = localStorage.getItem('as_enterprise_current_user');
-    const savedRegUsers = localStorage.getItem('as_enterprise_registered_users');
     const savedVisibility = localStorage.getItem('as_enterprise_receipt_visibility');
+    const savedCopyConfig = localStorage.getItem('as_enterprise_copy_config');
     const savedTheme = localStorage.getItem('as_enterprise_theme');
 
-    if (savedCalcs) {
-      const parsed = JSON.parse(savedCalcs);
-      setCalculations(recalculateDailySequences(parsed));
-    }
     if (savedNotes) setNotes(JSON.parse(savedNotes));
     if (savedChallan) setDefaultChallan(parseInt(savedChallan) || 601);
     if (savedLang) setLanguage(savedLang as 'bn' | 'en');
-    if (savedUser) setCurrentUser(savedUser);
-    if (savedRegUsers) setRegisteredUsers(JSON.parse(savedRegUsers));
     if (savedVisibility) setReceiptVisibility(JSON.parse(savedVisibility));
+    if (savedCopyConfig) setCopyConfig(JSON.parse(savedCopyConfig));
 
     if (savedTheme === 'dark') {
       setDarkMode(true);
@@ -345,11 +481,6 @@ export default function App() {
     }
   };
 
-  // Save changes to localStorage
-  useEffect(() => {
-    localStorage.setItem('as_enterprise_calcs', JSON.stringify(calculations));
-  }, [calculations]);
-
   useEffect(() => {
     localStorage.setItem('as_enterprise_notes', JSON.stringify(notes));
   }, [notes]);
@@ -358,39 +489,48 @@ export default function App() {
     if (calculations.length === 0) {
       return defaultChallan;
     }
-    // Latest calculation
     const latest = calculations[0];
     return (latest.challanNo !== undefined ? latest.challanNo : defaultChallan) + 1;
   }, [calculations, defaultChallan]);
 
   // --- Handlers ---
 
-  const addCalculation = (calc: Omit<Calculation, 'createdBy'>) => {
-    const newCalc: Calculation = {
-      ...calc,
-      createdBy: currentUser
-    };
-    const updated = recalculateDailySequences([newCalc, ...calculations]);
-    setCalculations(updated);
-
-    // Speak Bengali TTS for the new sequence Get Entry number
-    const addedCalc = updated.find(c => c.id === newCalc.id);
-    if (addedCalc && addedCalc.getEntryNo) {
-      speakGetEntryBengali(addedCalc.getEntryNo);
+  const addCalculation = async (calc: Omit<Calculation, 'createdBy'>) => {
+    try {
+      const newCalc = {
+        ...calc,
+        createdBy: currentUserEmail || currentUser || 'Guest',
+        createdByName: currentUser || 'Operator'
+      };
+      
+      // Save directly to Firestore calculations collection
+      await addDoc(collection(db, 'calculations'), newCalc);
+    } catch (err: any) {
+      console.error("Error adding calculation document: ", err);
+      alert(language === 'bn' ? 'ডাটাবেজে সেভ করতে ত্রুটি হয়েছে!' : 'Error saving to database: ' + err.message);
     }
   };
 
-  const deleteCalculation = (id: string) => {
-    const confirmation = language === 'bn' ? 'আপনি কি এই রেকর্ডটি মুছে ফেলতে লজ্জিত?' : 'Are you sure you want to delete this record?';
+  const deleteCalculation = async (id: string) => {
+    const confirmation = language === 'bn' ? 'আপনি কি এই রেকর্ডটি মুছে ফেলতে চান?' : 'Are you sure you want to delete this record?';
     if (confirm(confirmation)) {
-      const remaining = calculations.filter(c => c.id !== id);
-      setCalculations(recalculateDailySequences(remaining));
+      try {
+        await deleteDoc(doc(db, 'calculations', id));
+      } catch (err: any) {
+        console.error("Error deleting doc: ", err);
+        alert(language === 'bn' ? 'রেকর্ডটি ডিলিট করতে সমস্যা হয়েছে!' : 'Error deleting record: ' + err.message);
+      }
     }
   };
 
-  const editCalculation = (updated: Calculation) => {
-    const nextList = calculations.map(c => c.id === updated.id ? updated : c);
-    setCalculations(recalculateDailySequences(nextList));
+  const editCalculation = async (updated: Calculation) => {
+    try {
+      const { id, ...dataToUpdate } = updated;
+      await updateDoc(doc(db, 'calculations', id), dataToUpdate);
+    } catch (err: any) {
+      console.error("Error editing doc: ", err);
+      alert(language === 'bn' ? 'রেকর্ডটি এডিট করতে সমস্যা হয়েছে!' : 'Error editing record: ' + err.message);
+    }
   };
 
   const addNote = (note: Note) => {
@@ -401,35 +541,12 @@ export default function App() {
     setNotes(notes.filter(n => n.id !== id));
   };
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!authName || !authPassword) return;
-    
-    const lowerName = authName.trim().toLowerCase();
-    
-    // Auto registering if non-existing user as per spec ("কোন ভেরিফিকেশন থাকবে না")
-    if (!registeredUsers[lowerName]) {
-      const updated = { ...registeredUsers, [lowerName]: authPassword };
-      setRegisteredUsers(updated);
-      localStorage.setItem('as_enterprise_registered_users', JSON.stringify(updated));
-    } else {
-      // Check password
-      if (registeredUsers[lowerName] !== authPassword) {
-        alert(language === 'bn' ? 'ভুল পাসওয়ার্ড! দয়া করে সঠিক পাসওয়ার্ড দিন।' : 'Incorrect password for this existing operator ID.');
-        return;
-      }
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err: any) {
+      console.error("Sign out error: ", err);
     }
-
-    setCurrentUser(authName.trim());
-    localStorage.setItem('as_enterprise_current_user', authName.trim());
-    setAuthName('');
-    setAuthPassword('');
-    alert(language === 'bn' ? `${authName} হিসেবে সফলভাবে লগইন সম্পন্ন হয়েছে!` : `Logged in as ${authName}!`);
-  };
-
-  const handleLogout = () => {
-    setCurrentUser('Guest');
-    localStorage.setItem('as_enterprise_current_user', 'Guest');
   };
 
   const toggleLanguage = () => {
@@ -445,16 +562,23 @@ export default function App() {
     localStorage.setItem('as_enterprise_receipt_visibility', JSON.stringify(updated));
   };
 
+  // Copy config toggle handler
+  const handleToggleCopyConfig = (key: keyof CopyConfig) => {
+    const updated = { ...copyConfig, [key]: !copyConfig[key] };
+    setCopyConfig(updated);
+    localStorage.setItem('as_enterprise_copy_config', JSON.stringify(updated));
+  };
+
   // --- Calculations Filter & Scope ---
-  // If currentUser is "admin", we see all records. Otherwise we only see records created by logged-in user!
+  // If user role is "admin", they see all records. Otherwise they only see records they created!
   const scopedCalculations = useMemo(() => {
-    const isUserAdmin = currentUser.toLowerCase() === 'admin';
+    const isUserAdmin = userRole === 'admin';
     if (isUserAdmin) {
       return calculations;
     }
     // standard user only sees their own calculations
-    return calculations.filter(c => c.createdBy === currentUser || (!c.createdBy && currentUser === 'Guest'));
-  }, [calculations, currentUser]);
+    return calculations.filter(c => c.createdBy === currentUserEmail || c.createdBy === currentUser);
+  }, [calculations, userRole, currentUserEmail, currentUser]);
 
   const filteredCalculations = useMemo(() => {
     const now = Date.now();
@@ -663,6 +787,27 @@ export default function App() {
     printWindow.print();
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-4">
+        <div className="w-12 h-12 border-4 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-yellow-400 font-black text-xs uppercase tracking-widest animate-pulse">
+          {language === 'bn' ? 'অপেক্ষা করুন...' : 'Loading Session...'}
+        </p>
+      </div>
+    );
+  }
+
+  if (!firebaseUser) {
+    return (
+      <LoginScreen 
+        language={language} 
+        setLanguage={setLanguage} 
+        onLoginSuccess={() => {}} 
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 selection:bg-yellow-200 transition-colors duration-200">
       {/* Dynamic Header */}
@@ -679,7 +824,9 @@ export default function App() {
             
             {/* Nav Links */}
             <nav className="hidden lg:flex items-center h-full">
-              <NavButton label={t.home} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
+              {userRole === 'admin' && (
+                <NavButton label={t.home} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
+              )}
               <NavButton label={t.calculator} active={activeTab === 'calculator'} onClick={() => setActiveTab('calculator')} />
               <NavButton label={t.history} active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
               <NavButton label={t.note} active={activeTab === 'note'} onClick={() => setActiveTab('note')} />
@@ -734,7 +881,7 @@ export default function App() {
                   onChange={(e) => setActiveTab(e.target.value as Tab)}
                   className="bg-black text-white text-[10px] font-black border-none rounded px-2.5 py-1.5 outline-none cursor-pointer"
                 >
-                  <option value="home">{t.home}</option>
+                  {userRole === 'admin' && <option value="home">{t.home}</option>}
                   <option value="calculator">{t.calculator}</option>
                   <option value="history">{t.history}</option>
                   <option value="note">{t.note}</option>
@@ -752,7 +899,19 @@ export default function App() {
         <AnimatePresence mode="wait">
           {activeTab === 'home' && (
             <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <HomeSection stats={stats} dateFilter={dateFilter} setDateFilter={setDateFilter} t={t} todayCount={todayCalculationsCount} language={language} />
+              <HomeSection 
+                stats={stats} 
+                dateFilter={dateFilter} 
+                setDateFilter={setDateFilter} 
+                t={t} 
+                todayCount={todayCalculationsCount} 
+                language={language} 
+                calculations={searchedCalculations}
+                allCalculations={scopedCalculations}
+                onDelete={deleteCalculation}
+                onEdit={editCalculation}
+                userRole={userRole}
+              />
             </motion.div>
           )}
           {activeTab === 'calculator' && (
@@ -764,6 +923,7 @@ export default function App() {
                 t={t}
                 calculations={calculations}
                 receiptVisibility={receiptVisibility}
+                copyConfig={copyConfig}
               />
             </motion.div>
           )}
@@ -907,6 +1067,55 @@ export default function App() {
                     </div>
                   </div>
 
+                  <div className="space-y-4 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-850">
+                    <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider mb-2">
+                      {language === 'bn' ? 'কপি অপশন কন্টেন্ট সেটিংস (Copy Options)' : 'Copy Text Visibility Controls'}
+                    </h3>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'বিক্রেতার নাম (Seller Name)' : 'Seller Name'} 
+                        value={copyConfig.sellerName} 
+                        onChange={() => handleToggleCopyConfig('sellerName')} 
+                      />
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'চালান নম্বর (Challan No)' : 'Challan No'} 
+                        value={copyConfig.challanNo} 
+                        onChange={() => handleToggleCopyConfig('challanNo')} 
+                      />
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'গেট এন্ট্রি নম্বর (Get Entry No)' : 'Get Entry No'} 
+                        value={copyConfig.getEntryNo} 
+                        onChange={() => handleToggleCopyConfig('getEntryNo')} 
+                      />
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'মোট ওজন (Total Weight)' : 'Total Weight'} 
+                        value={copyConfig.totalWeight} 
+                        onChange={() => handleToggleCopyConfig('totalWeight')} 
+                      />
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'ওজন কর্তন (Deducted Weight)' : 'Deducted Weight'} 
+                        value={copyConfig.deduction} 
+                        onChange={() => handleToggleCopyConfig('deduction')} 
+                      />
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'নিট ওজন (Net Weight)' : 'Net Weight'} 
+                        value={copyConfig.netWeight} 
+                        onChange={() => handleToggleCopyConfig('netWeight')} 
+                      />
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'দর প্রতি মণ (Rate / Mon)' : 'Rate / Mon'} 
+                        value={copyConfig.rate} 
+                        onChange={() => handleToggleCopyConfig('rate')} 
+                      />
+                      <VisibilityToggle 
+                        label={language === 'bn' ? 'মোট মূল্য (Total Price)' : 'Total Price'} 
+                        value={copyConfig.totalPrice} 
+                        onChange={() => handleToggleCopyConfig('totalPrice')} 
+                      />
+                    </div>
+                  </div>
+
                   {/* General settings default challan */}
                   <div className="p-6 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg border border-yellow-100 dark:border-yellow-900/30 max-w-xl">
                     <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider mb-2">
@@ -945,86 +1154,44 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Operator Login Panel */}
-                <div className="w-full lg:w-96 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-850">
-                  <div className="mb-6">
-                    <div className="flex items-center gap-2 mb-2">
-                      <User className="text-yellow-600 dark:text-yellow-500" size={20} />
-                      <h3 className="text-md font-black text-slate-800 dark:text-slate-100">{t.loginTitle}</h3>
-                    </div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                      {language === 'bn' 
-                        ? 'কোনো কঠিন ভেরিফিকেশন বা সেশন ফি নেই। যেকোনো নাম দিয়ে সাথে সাথে অ্যাকাউন্ট খুলে প্রতিটি হিসাব সরাসরি আপনার নামে সেভ করতে পারেন।' 
-                        : 'No heavy verification sequence. Simply logon as any username and calculations will be indexed under your identity.'}
-                    </p>
+                {/* Operator Session Info Panel */}
+                <div className="w-full lg:w-96 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-850 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <User className="text-yellow-600 dark:text-yellow-500" size={20} />
+                    <h3 className="text-md font-black text-slate-800 dark:text-slate-100">
+                      {language === 'bn' ? 'ইউজার সেশন প্রোফাইল' : 'User Session Profile'}
+                    </h3>
                   </div>
-
-                  {currentUser !== 'Guest' ? (
-                    <div className="bg-white dark:bg-slate-900 p-5 rounded-lg border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm">
-                      <p className="text-xs text-slate-400 dark:text-slate-500 uppercase font-black tracking-wider">{t.loggedInAs}</p>
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-slate-900 border-2 border-yellow-400 flex items-center justify-center text-white font-black text-base">
-                          {currentUser.substring(0, 2).toUpperCase()}
-                        </div>
-                        <div>
-                          <p className="font-black text-sm text-slate-800 dark:text-slate-100">{currentUser}</p>
-                          <p className="text-[10px] text-green-600 font-bold uppercase tracking-widest bg-green-50 dark:bg-green-950/40 px-2 py-0.5 rounded border border-green-100 dark:border-green-900/30 inline-block mt-0.5">
-                            {currentUser.toLowerCase() === 'admin' ? 'ADMIN / এডমিন' : 'ACTIVE SESSION'}
-                          </p>
-                        </div>
+                  
+                  <div className="bg-white dark:bg-slate-900 p-5 rounded-lg border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm">
+                    <p className="text-xs text-slate-400 dark:text-slate-500 uppercase font-black tracking-wider">
+                      {language === 'bn' ? 'লগইনকৃত ইউজার:' : 'Authenticated Operator:'}
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-slate-900 border-2 border-yellow-400 flex items-center justify-center text-white font-black text-base">
+                        {currentUser.substring(0, 2).toUpperCase()}
                       </div>
-
-                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500 italic">
-                          {language === 'bn' ? 'সকল চালানের হিসাব সংরক্ষিত হচ্ছে' : 'Logs tracked under your name'}
+                      <div>
+                        <p className="font-black text-sm text-slate-800 dark:text-slate-100">{currentUser}</p>
+                        <p className="text-[10px] text-slate-500 font-bold max-w-[150px] truncate">{currentUserEmail}</p>
+                        <p className="text-[9px] text-yellow-600 dark:text-yellow-400 font-black uppercase tracking-widest bg-yellow-50 dark:bg-yellow-950/40 px-2 py-0.5 rounded border border-yellow-100 dark:border-yellow-900/30 inline-block mt-1">
+                          {userRole === 'admin' ? (language === 'bn' ? 'এডমিন (ADMIN)' : 'ADMIN ROLE') : (language === 'bn' ? 'অপারেটর (GUEST)' : 'GUEST ROLE')}
                         </p>
-                        <button 
-                          onClick={handleLogout}
-                          className="px-3 py-1.5 bg-red-100 hover:bg-red-200 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900 text-red-700 text-[10px] font-black uppercase rounded tracking-wider transition-all"
-                        >
-                          {language === 'bn' ? 'লগআউট' : 'Sign Out'}
-                        </button>
                       </div>
                     </div>
-                  ) : (
-                    <form onSubmit={handleLogin} className="space-y-4">
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 block mb-1">{t.usernameText}</label>
-                        <input 
-                          type="text"
-                          required
-                          placeholder="e.g. Sales"
-                          value={authName}
-                          onChange={e => setAuthName(e.target.value)}
-                          className="w-full px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 block mb-1">{t.passwordText}</label>
-                        <input 
-                          type="password"
-                          required
-                          placeholder="••••••"
-                          value={authPassword}
-                          onChange={e => setAuthPassword(e.target.value)}
-                          className="w-full px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
-                        />
-                      </div>
 
-                      <p className="text-[9px] leading-relaxed text-slate-400 dark:text-slate-500 italic">
-                        * {language === 'bn' 
-                          ? 'নতুন নাম দিলে স্বয়ংক্রিয়ভাবে একটি অ্যাকাউন্ট তৈরি হয়ে পরবর্তী কাজের জন্য পাসওয়ার্ড দিয়ে লক থাকবে।' 
-                          : 'Entering a new username automatically registers you. Keep passwords remembered for return logins.'}
+                    <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center">
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 italic">
+                        {language === 'bn' ? 'সকল চালানের হিসাব ক্লাউডে সংরক্ষিত' : 'Logs secured on cloud'}
                       </p>
-
                       <button 
-                        type="submit"
-                        className="w-full py-2.5 bg-slate-900 hover:bg-black dark:bg-yellow-400 dark:hover:bg-yellow-500 dark:text-slate-950 text-yellow-400 font-extrabold uppercase text-[10px] tracking-widest rounded transition-all active:scale-95 shadow-sm"
+                        onClick={handleLogout}
+                        className="px-3 py-1.5 bg-red-100 hover:bg-red-200 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900 text-red-700 text-[10px] font-black uppercase rounded tracking-wider transition-all"
                       >
-                        {t.loginText} / {t.registerText}
+                        {language === 'bn' ? 'লগআউট' : 'Sign Out'}
                       </button>
-                    </form>
-                  )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -1087,18 +1254,115 @@ function VisibilityToggle({ label, value, onChange }: { label: string, value: bo
 
 // --- Home ---
 
-function HomeSection({ stats, dateFilter, setDateFilter, t, todayCount, language }: { 
-  stats: any, 
-  dateFilter: DateFilter, 
-  setDateFilter: (f: DateFilter) => void,
-  t: any,
-  todayCount: number,
-  language: 'bn' | 'en'
-}) {
+// --- Home ---
+
+interface HomeSectionProps {
+  stats: any;
+  dateFilter: DateFilter;
+  setDateFilter: (f: DateFilter) => void;
+  t: any;
+  todayCount: number;
+  language: 'bn' | 'en';
+  calculations: Calculation[];
+  allCalculations: Calculation[];
+  onDelete: (id: string) => void;
+  onEdit: (updated: Calculation) => void;
+  userRole: 'admin' | 'guest' | null;
+}
+
+function HomeSection({ 
+  stats, 
+  dateFilter, 
+  setDateFilter, 
+  t, 
+  todayCount, 
+  language,
+  calculations = [],
+  allCalculations = [],
+  onDelete,
+  onEdit,
+  userRole
+}: HomeSectionProps) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
+  const [operatorFilter, setOperatorFilter] = useState('ALL');
+
+  // Compute unique operators
+  const operators = useMemo(() => {
+    const list = new Set<string>();
+    allCalculations.forEach(c => {
+      if (c.createdBy) list.add(c.createdBy);
+      else list.add('Guest');
+    });
+    return Array.from(list);
+  }, [allCalculations]);
+
+  // Filter calculations based on local search query & operator filter
+  const filteredList = useMemo(() => {
+    return calculations.filter(calc => {
+      const createdByVal = calc.createdBy || 'Guest';
+      const matchesOperator = operatorFilter === 'ALL' || createdByVal.toLowerCase() === operatorFilter.toLowerCase();
+      
+      const query = searchQuery.toLowerCase().trim();
+      const matchesSearch = !query || 
+        calc.sellerName.toLowerCase().includes(query) || 
+        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query));
+        
+      return matchesOperator && matchesSearch;
+    });
+  }, [calculations, searchQuery, operatorFilter]);
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <h2 className="text-xl md:text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight uppercase">{t.summary}</h2>
+      {/* Prominent Visual Header Banner for Admin Panel */}
+      {userRole === 'admin' ? (
+        <div className="bg-slate-900 text-white rounded-xl border border-slate-800 p-6 shadow-xl relative overflow-hidden">
+          {/* Background brand accent lines */}
+          <div className="absolute top-0 right-0 w-32 h-full bg-yellow-400 skew-x-12 opacity-10 translate-x-12"></div>
+          <div className="absolute top-0 right-12 w-8 h-full bg-yellow-400 skew-x-12 opacity-5 translate-x-12"></div>
+          
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 relative z-10">
+            <div className="space-y-1.5">
+              <div className="inline-flex items-center gap-2 bg-yellow-400 text-slate-950 text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded border border-yellow-300">
+                <span>🛡️ SECURE ADMIN CONSOLE</span>
+              </div>
+              <h1 className="text-2xl md:text-3xl font-black text-yellow-400 tracking-tight font-sans">
+                {language === 'bn' ? "এ. এস. এন্টারপ্রাইজ - এডমিন প্যানেল" : "A. S. Enterprise - Admin Panel"}
+              </h1>
+              <p className="text-xs text-slate-400 font-medium max-w-2xl leading-relaxed">
+                {language === 'bn' 
+                  ? "রিয়েল-টাইম অপারেশন লেজার, দৈনিক মোট গেট এন্ট্রি রূপান্তর, এবং অপারেটরদের কার্যক্রম পর্যবেক্ষণের সম্পূর্ণ নিয়ন্ত্রণ।"
+                  : "Complete command of real-time operation ledgers, daily gate entry conversion volume, and authenticated operator activity tracker."}
+              </p>
+            </div>
+            
+            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-4 py-2.5 rounded-lg shrink-0">
+              <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse"></div>
+              <p className="text-[10px] font-mono font-bold text-slate-300 uppercase tracking-wider">
+                DATABASE: ACTIVE (FIREBASE)
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <h2 className="text-xl md:text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight uppercase">
+            {t.summary}
+          </h2>
+        </div>
+      )}
+
+      {/* Date Filter Bar */}
+      <div className="flex items-center justify-between flex-wrap gap-4 pt-1">
+        <div>
+          <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+            {language === 'bn' ? "লেজার ফিল্টারিং সময়কাল" : "LEGER DURATION FILTER"}
+          </h3>
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
+            {language === 'bn' ? "সংক্ষিপ্ত ড্যাশবোর্ড পরিসংখ্যান" : "Real-time summary statistics"}
+          </p>
+        </div>
+        
         <div className="flex bg-white dark:bg-slate-900 p-1 rounded shadow-sm border border-slate-200 dark:border-slate-800">
           {(['today', 'yesterday', '7days', '1month'] as DateFilter[]).map((f) => (
             <button
@@ -1117,6 +1381,7 @@ function HomeSection({ stats, dateFilter, setDateFilter, t, todayCount, language
         </div>
       </div>
 
+      {/* Compact Stat Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <CompactStatCard label={t.totalKgLabel} value={stats.totalKg.toLocaleString()} unit="KG" bg="bg-white" />
         <CompactStatCard label={t.totalMonLabel} value={stats.totalMon.toFixed(2)} unit="MON" bg="bg-white" />
@@ -1125,10 +1390,438 @@ function HomeSection({ stats, dateFilter, setDateFilter, t, todayCount, language
           label={language === 'bn' ? "আজকের মোট গেট এন্ট্রি" : "Today's Get Entries"} 
           value={language === 'bn' ? toBengaliDigits(todayCount) : todayCount.toString()} 
           unit={language === 'bn' ? "টি" : "ENTRIES"} 
-          bg="bg-indigo-600 dark:bg-indigo-950/40" 
-          text="text-white" 
+          bg="bg-slate-900 text-yellow-400 dark:bg-slate-950 border-slate-800" 
+          text="text-yellow-400" 
         />
       </div>
+
+      {/* Admin Specific Operations Logs Table */}
+      {userRole === 'admin' && (
+        <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden mt-6 animate-fadeIn">
+          <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
+                {language === 'bn' ? "দৈনিক চালান বিবরণ খাতা" : "Daily Calculations Table"}
+              </h3>
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
+                {filteredList.length} {language === 'bn' ? 'টি রেকর্ড খুঁজে পাওয়া গেছে' : 'records found matching criteria'}
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+              {/* Quick Search Bar */}
+              <div className="relative flex items-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 h-8">
+                <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 mr-2 shrink-0" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={language === 'bn' ? "বিক্রেতা বা চালান নং" : "Search seller or challan..."}
+                  className="w-full sm:w-44 bg-transparent border-none text-[10px] font-bold text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 outline-none p-0 h-full"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="ml-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-[10px] font-black focus:outline-none"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* Operator select filter */}
+              {operators.length > 0 && (
+                <div className="flex items-center gap-2 bg-white dark:bg-slate-900 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-800 h-8">
+                  <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400">{language === 'bn' ? 'অপারেটর' : 'Operator'}:</span>
+                  <select
+                    value={operatorFilter}
+                    onChange={e => setOperatorFilter(e.target.value)}
+                    className="text-[10px] font-black border-none bg-transparent dark:text-white outline-none cursor-pointer"
+                  >
+                    <option value="ALL">🌟 {language === 'bn' ? 'সব অপারেটর' : 'All Users'}</option>
+                    {operators.map(op => (
+                      <option key={op} value={op}>👤 {op}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {filteredList.length === 0 ? (
+            <div className="p-12 text-center text-slate-300 font-bold uppercase text-[10px]">
+              {language === 'bn' ? "কোনো চালান পাওয়া যায়নি" : "No entries found matching criteria"}
+            </div>
+          ) : (
+            <>
+              {/* Mobile Card List View */}
+              <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
+                {filteredList.map((calc) => {
+                  const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                    ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                    : calc.totalKg;
+                  const monCount = Math.floor(netKg / calc.monType);
+                  const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                  return (
+                    <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black text-slate-400">
+                          📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px]">
+                            #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                          </span>
+                          {calc.getEntryNo !== undefined && (
+                            <span className="font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 text-[9px]">
+                              {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-3 bg-slate-50/50 dark:bg-slate-950/20 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800/50">
+                        <div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
+                          <div className="font-black text-slate-800 dark:text-slate-200 flex flex-wrap items-center gap-1 mt-0.5">
+                            {calc.sellerName}
+                            {calc.isMinusCalculated && (
+                              <span className="inline-block text-[8px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase scale-90 origin-left">
+                                {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
+                          <div className="font-black text-emerald-600 text-sm mt-0.5">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
+                          <div className="font-bold text-slate-600 dark:text-slate-400 mt-0.5 text-xs">
+                            {calc.totalKg} KG
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'রূপান্তরিত ওজন' : 'Converted Weight'}</div>
+                          <div className="font-bold text-green-700 dark:text-green-400 mt-0.5 text-xs">
+                            {monCount} M {extraKg} KG
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
+                        <span className="text-[9px] font-black uppercase text-slate-400">
+                          👤 BY: {calc.createdBy || 'Guest'}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => setEditingCalc(calc)}
+                            className="flex items-center gap-1 bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 border border-blue-200 dark:border-blue-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95"
+                          >
+                            <Edit size={12} />
+                            <span>{language === 'bn' ? 'সম্পাদনা' : 'Edit'}</span>
+                          </button>
+                          <button 
+                            onClick={() => onDelete(calc.id)} 
+                            className="flex items-center gap-1 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 hover:bg-red-100 border border-red-200 dark:border-red-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95"
+                          >
+                            <Trash2 size={12} />
+                            <span>{language === 'bn' ? 'মুছুন' : 'Delete'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-950 text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Challan</th>
+                      <th className="px-3 py-3">Seller</th>
+                      <th className="px-3 py-3">Weight (KG)</th>
+                      <th className="px-3 py-3">Mon</th>
+                      <th className="px-3 py-3">Rate</th>
+                      <th className="px-4 py-3">Total</th>
+                      <th className="px-3 py-3">Operator</th>
+                      <th className="px-4 py-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {filteredList.map((calc) => {
+                      const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                        ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                        : calc.totalKg;
+                      const monCount = Math.floor(netKg / calc.monType);
+                      const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                      return (
+                        <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
+                          <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
+                            {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                          </td>
+                          <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
+                            <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
+                            {calc.getEntryNo !== undefined && (
+                              <div className="text-[9px] text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 inline-block font-black mt-1">
+                                {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 font-black">
+                            {calc.sellerName}
+                            {calc.isMinusCalculated && (
+                              <span className="ml-1.5 inline-block text-[9px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase">
+                                {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 font-bold whitespace-nowrap">
+                            <div>{calc.totalKg} KG</div>
+                            {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
+                              <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1.5 rounded mt-1 text-slate-500 dark:text-slate-450 font-semibold space-y-0.5 min-w-[130px]">
+                                <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
+                                <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
+                                <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 font-bold text-green-700 dark:text-green-400 whitespace-nowrap">
+                            <div>{monCount} M {extraKg} KG</div>
+                            {calc.isMinusCalculated && (
+                              <div className="text-[9px] text-slate-450 font-bold">
+                                {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 text-slate-500 font-bold whitespace-nowrap">
+                            <div>৳{calc.ratePerMon}</div>
+                            {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
+                              <div className="text-[9px] text-emerald-600 font-extrabold">
+                                Target: ৳{calc.targetMonPrice}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-black text-slate-900 dark:text-white">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
+                          <td className="px-3 py-3 whitespace-nowrap">
+                            <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                              {calc.createdBy || 'Guest'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-1.5">
+                              <button 
+                                onClick={() => setEditingCalc(calc)}
+                                className="text-slate-400 hover:text-blue-600 p-1.5 rounded hover:bg-slate-100/80 dark:hover:bg-slate-800 transition-all"
+                                title={language === 'bn' ? 'সম্পাদনা করুন' : 'Edit record'}
+                              >
+                                <Edit size={13} />
+                              </button>
+                              <button 
+                                onClick={() => onDelete(calc.id)} 
+                                className="text-red-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50/80 dark:hover:bg-slate-800 transition-all"
+                                title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete record'}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Local Edit Modal Overlay inside HomeSection for Admins */}
+      {editingCalc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs font-sans">
+          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 max-w-sm w-full overflow-hidden">
+            <div className="bg-yellow-400 p-4 font-black flex justify-between items-center text-slate-950">
+              <span className="text-xs uppercase tracking-wider">
+                {language === 'bn' ? 'চালান সংশোধন করুন (অ্যাডমিন)' : 'Edit Challan Record (Admin)'}
+              </span>
+              <button 
+                onClick={() => setEditingCalc(null)} 
+                className="hover:bg-black/10 w-7 h-7 rounded-full flex items-center justify-center text-sm"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="p-5 space-y-4 text-left">
+              <div>
+                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'চালান নম্বর' : 'Challan No'}
+                </label>
+                <input 
+                  type="number" 
+                  value={editingCalc.challanNo !== undefined ? editingCalc.challanNo : ''}
+                  onChange={e => setEditingCalc({ ...editingCalc, challanNo: parseInt(e.target.value) || 0 })}
+                  className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}
+                </label>
+                <input 
+                  type="text" 
+                  value={editingCalc.sellerName}
+                  onChange={e => setEditingCalc({ ...editingCalc, sellerName: e.target.value })}
+                  className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-medium outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'ওজন (KG)' : 'Weight (KG)'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.totalKg}
+                    onChange={e => setEditingCalc({ ...editingCalc, totalKg: parseFloat(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'দর প্রতি মন (৳)' : 'Rate / Mon (৳)'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.ratePerMon}
+                    onChange={e => setEditingCalc({ ...editingCalc, ratePerMon: parseFloat(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'মন সাইজ' : 'Mon System'}
+                </label>
+                <select 
+                  value={editingCalc.monType}
+                  onChange={e => setEditingCalc({ ...editingCalc, monType: parseInt(e.target.value) as MonType })}
+                  className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 cursor-pointer text-slate-900 dark:text-white"
+                >
+                  <option value={40}>40 KG</option>
+                  <option value={41}>41 KG</option>
+                  <option value={42}>42 KG</option>
+                  <option value={43}>43 KG</option>
+                </select>
+              </div>
+
+              {editingCalc.isMinusCalculated && (
+                <div className="bg-rose-50/50 dark:bg-rose-950/20 p-3 rounded-lg border border-rose-100 dark:border-rose-900/30 space-y-3">
+                  <span className="text-[9px] font-black uppercase text-rose-800 dark:text-rose-400 tracking-wider">
+                    {language === 'bn' ? 'মাইনাস হিসাবের তথ্য' : 'Minus Calculation Attributes'}
+                  </span>
+                  {editingCalc.targetMonPrice !== undefined ? (
+                    <div>
+                      <label className="text-[9px] font-bold text-slate-500 uppercase block mb-1">
+                        {language === 'bn' ? 'কাঙ্ক্ষিত মনের দাম (৳)' : 'Target Mon Price (৳)'}
+                      </label>
+                      <input 
+                        type="number" 
+                        value={editingCalc.targetMonPrice}
+                        onChange={e => setEditingCalc({ ...editingCalc, targetMonPrice: parseFloat(e.target.value) || 0 })}
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 rounded text-xs font-bold text-emerald-600 dark:text-emerald-400 outline-none focus:ring-1 focus:ring-yellow-400"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-[9px] font-bold text-slate-500 uppercase block mb-1">
+                        {language === 'bn' ? 'কর্তন ওজন (KG)' : 'Deducted Weight (KG)'}
+                      </label>
+                      <input 
+                        type="number" 
+                        value={editingCalc.deductedWeight || 0}
+                        onChange={e => setEditingCalc({ ...editingCalc, deductedWeight: parseFloat(e.target.value) || 0 })}
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 rounded text-xs font-bold text-rose-600 dark:text-rose-400 outline-none focus:ring-1 focus:ring-yellow-400"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2">
+              <button 
+                type="button" 
+                onClick={() => setEditingCalc(null)} 
+                className="px-4.5 py-2 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 rounded text-xs font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition-all active:scale-95"
+              >
+                {language === 'bn' ? 'বাতিল' : 'Cancel'}
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  const mType = editingCalc.monType || 40;
+                  const kg = editingCalc.totalKg || 0;
+                  const rate = editingCalc.ratePerMon || 0;
+                  
+                  let totalMon = kg / mType;
+                  let totalPrice = totalMon * rate;
+
+                  if (editingCalc.isMinusCalculated) {
+                    let netWeight = kg;
+                    let deductedWeight = editingCalc.deductedWeight || 0;
+                    let deductionPercentage = editingCalc.deductionPercentage || 0;
+
+                    if (editingCalc.targetMonPrice !== undefined) {
+                      const targetMonPrice = editingCalc.targetMonPrice;
+                      if (rate > 0) {
+                        const ratio = targetMonPrice / rate;
+                        netWeight = kg * ratio;
+                        deductedWeight = Math.max(0, kg - netWeight);
+                        deductionPercentage = (deductedWeight / kg) * 100;
+                      }
+                    } else {
+                      netWeight = Math.max(0, kg - deductedWeight);
+                      if (kg > 0) {
+                        deductionPercentage = (deductedWeight / kg) * 100;
+                      }
+                    }
+
+                    totalMon = netWeight / mType;
+                    totalPrice = totalMon * rate;
+
+                    onEdit({
+                      ...editingCalc,
+                      totalMon,
+                      totalPrice,
+                      deductedWeight,
+                      deductionPercentage
+                    });
+                  } else {
+                    onEdit({
+                      ...editingCalc,
+                      totalMon,
+                      totalPrice
+                    });
+                  }
+                  setEditingCalc(null);
+                }} 
+                className="px-5 py-2 bg-yellow-400 text-black font-black uppercase text-[10px] tracking-wider rounded shadow hover:bg-yellow-500 transition-all active:scale-95"
+              >
+                {language === 'bn' ? 'সেভ করুন' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1159,9 +1852,10 @@ interface CalculatorProps {
   t: any;
   calculations: Calculation[];
   receiptVisibility: ReceiptVisibility;
+  copyConfig: CopyConfig;
 }
 
-function CalculatorSection({ onSave, expectedNextChallan, language, t, calculations, receiptVisibility }: CalculatorProps) {
+function CalculatorSection({ onSave, expectedNextChallan, language, t, calculations, receiptVisibility, copyConfig }: CalculatorProps) {
   const [formData, setFormData] = useState({
     sellerName: '',
     totalKg: '',
@@ -1174,6 +1868,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
 
   // Preview result is only filled out upon clicking "Calculate"
   const [previewResult, setPreviewResult] = useState<any | null>(null);
+  const [isSaved, setIsSaved] = useState(false);
 
   // Minus Calculate states
   const [isMinusMode, setIsMinusMode] = useState(false);
@@ -1280,8 +1975,35 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
   const enteredChallanNum = parseInt(formData.challanNo) || 0;
   const showChallanWarning = formData.challanNo !== '' && enteredChallanNum !== expectedNextChallan;
 
-  // On Calculate (হিসাব করুন): Calculate AND auto-save calculation immediately to the ledger!
+  // On Calculate (হিসাব করুন): Computes the preview representation of the firewood invoice but does NOT save yet.
   const handleCalculate = () => {
+    if (!formData.challanNo) {
+      alert(t.alertChallanMust);
+      return;
+    }
+
+    if (!formData.sellerName || !formData.totalKg || !formData.ratePerMon) {
+      alert(t.alertInputsMust);
+      return;
+    }
+
+    const calculated = {
+      sellerName: formData.sellerName,
+      totalKg: parseFloat(formData.totalKg),
+      challanNo: enteredChallanNum,
+      monType: formData.monType,
+      monCount: currentCalcResult.monCount,
+      extraKg: currentCalcResult.extraKg,
+      totalMonDecimal: currentCalcResult.totalMonDecimal,
+      price: currentCalcResult.price,
+      ratePerMon: parseFloat(formData.ratePerMon)
+    };
+
+    setPreviewResult(calculated);
+    setIsSaved(false);
+  };
+
+  const handleSaveCalculation = () => {
     if (!formData.challanNo) {
       alert(t.alertChallanMust);
       return;
@@ -1330,7 +2052,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       }
     }
 
-    // Auto-save to DB!
+    // Save to DB!
     onSave({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
@@ -1344,10 +2066,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     });
 
     setPreviewResult(calculated);
+    setIsSaved(true);
 
     const successMsg = language === 'bn' 
       ? 'হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
-      : 'Calculation finalized and automatically saved to database!';
+      : 'Calculation finalized and successfully saved to database!';
     alert(successMsg);
 
     // Increment challan for next row & reset form
@@ -1359,6 +2082,66 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       challanNo: (calculated.challanNo + 1).toString()
     });
     setAllowSerialBypass(false);
+  };
+
+  const handleClear = () => {
+    setFormData({
+      sellerName: '',
+      totalKg: '',
+      ratePerMon: '',
+      monType: formData.monType,
+      challanNo: expectedNextChallan.toString()
+    });
+    setPreviewResult(null);
+    setIsSaved(false);
+    setAllowSerialBypass(false);
+  };
+
+  const handleClearMinus = () => {
+    setMinusFormData({
+      sellerName: '',
+      totalKg: '',
+      minusWeight: '',
+      targetMonPrice: '',
+      monType: minusFormData.monType,
+      ratePerMon: '',
+      challanNo: expectedNextChallan.toString(),
+      activeInput: 'weight'
+    });
+    setPreviewResult(null);
+    setIsSaved(false);
+  };
+
+  const handleCalculateMinus = () => {
+    if (!minusFormData.challanNo) {
+      alert(t.alertChallanMust);
+      return;
+    }
+
+    if (!minusFormData.sellerName || !minusFormData.totalKg || !minusFormData.ratePerMon) {
+      alert(t.alertInputsMust);
+      return;
+    }
+
+    const enteredChallanNum = parseInt(minusFormData.challanNo) || 0;
+    const calculated = {
+      sellerName: minusFormData.sellerName,
+      totalKg: parseFloat(minusFormData.totalKg),
+      challanNo: enteredChallanNum,
+      monType: minusFormData.monType,
+      monCount: minusCalcResult.monCount,
+      extraKg: minusCalcResult.extraKg,
+      totalMonDecimal: minusCalcResult.netMon,
+      price: minusCalcResult.totalPrice,
+      ratePerMon: parseFloat(minusFormData.ratePerMon),
+      deductedWeight: minusCalcResult.minusWeight,
+      deductionPercentage: minusCalcResult.deductionPercentage,
+      isMinusCalculated: true,
+      targetMonPrice: minusFormData.activeInput === 'targetPrice' ? parseFloat(minusFormData.targetMonPrice) : undefined
+    };
+
+    setPreviewResult(calculated);
+    setIsSaved(false);
   };
 
   const handleSaveMinusCalculation = () => {
@@ -1406,7 +2189,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       targetMonPrice: minusFormData.activeInput === 'targetPrice' ? parseFloat(minusFormData.targetMonPrice) : undefined
     };
 
-    // Auto-save to DB!
+    // Save to DB!
     onSave({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
@@ -1424,10 +2207,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     });
 
     setPreviewResult(calculated);
+    setIsSaved(true);
 
     const successMsg = language === 'bn' 
       ? 'মাইনাস হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
-      : 'Minus calculation finalized and automatically saved to database!';
+      : 'Minus calculation finalized and successfully saved to database!';
     alert(successMsg);
 
     // Increment challan for next row & reset form
@@ -1450,36 +2234,61 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     }
 
     const formattedPrice = Math.round(previewResult.price);
-    let textToCopy = '';
+    const lines: string[] = [];
 
-    if (previewResult.isMinusCalculated) {
-      textToCopy = `
-বিক্রেতার নাম:  ${previewResult.sellerName}
+    if (copyConfig.sellerName && previewResult.sellerName) {
+      lines.push(`${language === 'bn' ? 'বিক্রেতার নাম:' : 'Seller Name:'} ${previewResult.sellerName}`);
+    }
 
-মোট ওজন:  ${toBengaliDigits(previewResult.totalKg)} কেজী
+    if (copyConfig.challanNo && previewResult.challanNo !== undefined) {
+      const challanVal = language === 'bn' ? toBengaliDigits(previewResult.challanNo) : previewResult.challanNo;
+      lines.push(`${language === 'bn' ? 'চালান নং:' : 'Challan No:'} #${challanVal}`);
+    }
 
-ওজন কর্তন: -${toBengaliDigits(previewResult.deductedWeight.toFixed(1))} কেজী (${toBengaliDigits(previewResult.deductionPercentage.toFixed(1))}%)
+    if (copyConfig.getEntryNo && previewResult.getEntryNo !== undefined) {
+      const getEntryVal = language === 'bn' ? toBengaliDigits(previewResult.getEntryNo) : previewResult.getEntryNo;
+      lines.push(`${language === 'bn' ? 'গেট এন্ট্রি নং:' : 'Get Entry No:'} #${getEntryVal}`);
+    }
 
-নিট ওজন :  ${toBengaliDigits(previewResult.monCount)} মোন ${toBengaliDigits(previewResult.extraKg)} কেজী
+    if (copyConfig.totalWeight && previewResult.totalKg !== undefined) {
+      const weightVal = language === 'bn' ? `${toBengaliDigits(previewResult.totalKg)} কেজি` : `${previewResult.totalKg} KG`;
+      lines.push(`${language === 'bn' ? 'মোট ওজন:' : 'Total Weight:'} ${weightVal}`);
+    }
 
-রেট : ${toBengaliDigits(previewResult.ratePerMon)} টাকা
+    if (previewResult.isMinusCalculated && previewResult.deductedWeight !== undefined) {
+      if (copyConfig.deduction) {
+        const dedWeightVal = language === 'bn' ? `${toBengaliDigits(previewResult.deductedWeight.toFixed(1))} কেজি` : `${previewResult.deductedWeight.toFixed(1)} KG`;
+        const dedPctVal = language === 'bn' ? `${toBengaliDigits(previewResult.deductionPercentage.toFixed(1))}%` : `${previewResult.deductionPercentage.toFixed(1)}%`;
+        lines.push(`${language === 'bn' ? 'ওজন কর্তন:' : 'Deducted Weight:'} -${dedWeightVal} (${dedPctVal})`);
+      }
+    }
 
-মোট মূল্য: ${toBengaliDigits(formattedPrice)} টাকা
-`.trim();
-    } else {
-      textToCopy = `
-বিক্রেতার নাম:  ${previewResult.sellerName}
+    if (copyConfig.netWeight) {
+      const netMon = language === 'bn' 
+        ? `${toBengaliDigits(previewResult.monCount)} মণ ${toBengaliDigits(previewResult.extraKg)} কেজি` 
+        : `${previewResult.monCount} Mon ${previewResult.extraKg} KG`;
+      lines.push(`${language === 'bn' ? 'নিট ওজন:' : 'Net Weight:'} ${netMon}`);
+    }
 
-ওজন :  ${toBengaliDigits(previewResult.monCount)} মোন ${toBengaliDigits(previewResult.extraKg)} কেজী
+    if (copyConfig.rate && previewResult.ratePerMon !== undefined) {
+      const rateVal = language === 'bn' ? `${toBengaliDigits(previewResult.ratePerMon)} টাকা` : `৳${previewResult.ratePerMon}`;
+      lines.push(`${language === 'bn' ? 'রেট (দর):' : 'Rate/Mon:'} ${rateVal}`);
+    }
 
-রেট : ${toBengaliDigits(previewResult.ratePerMon)} টাকা
+    if (copyConfig.totalPrice) {
+      const priceVal = language === 'bn' ? `${toBengaliDigits(formattedPrice)} টাকা` : `৳${formattedPrice}`;
+      lines.push(`${language === 'bn' ? 'মোট মূল্য:' : 'Total Price:'} ${priceVal}`);
+    }
 
-মোট মূল্য: ${toBengaliDigits(formattedPrice)} টাকা
-`.trim();
+    const textToCopy = lines.join('\n\n');
+
+    if (!textToCopy.trim()) {
+      alert(language === 'bn' ? 'কপি করার মতো কোনো কন্টেন্ট সিলেক্ট করা নেই!' : 'No copy items selected in Settings!');
+      return;
     }
 
     navigator.clipboard.writeText(textToCopy);
-    alert(language === 'bn' ? 'হিসাবটি সফলভাবে বাংলায় কপি করা হয়েছে!' : 'The calculated elements have been copied successfully!');
+    alert(language === 'bn' ? 'হিসাবটি সফলভাবে কপি করা হয়েছে!' : 'The calculated elements have been copied successfully!');
   };
 
   const handleSaveImage = () => {
@@ -1766,7 +2575,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
               </div>
             </div>
 
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 pt-1">
+            <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 pt-1">
               {/* Allow manual custom sequential check or bypass */}
               <div className="flex items-center">
                 {showChallanWarning ? (
@@ -1786,12 +2595,29 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 )}
               </div>
 
-              <div className="w-full sm:w-64">
+              <div className="grid grid-cols-3 gap-2 w-full lg:w-auto">
                 <button 
+                  type="button"
+                  onClick={handleClear}
+                  className="h-11 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 font-black uppercase text-[11px] tracking-wider rounded border border-slate-200 dark:border-slate-750 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                >
+                  <span>{language === 'bn' ? "ক্লিয়ার" : "Clear"}</span>
+                </button>
+
+                <button 
+                  type="button"
                   onClick={handleCalculate}
-                  className="w-full h-11 bg-yellow-400 text-black font-black uppercase text-[11px] tracking-wider rounded shadow hover:bg-yellow-500 transition-all active:scale-95 flex items-center justify-center gap-2"
+                  className="h-11 px-4 bg-yellow-400 hover:bg-yellow-500 text-black font-black uppercase text-[11px] tracking-wider rounded shadow transition-all active:scale-95 flex items-center justify-center gap-1.5"
                 >
                   <span>{t.calculate}</span>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={handleSaveCalculation}
+                  className="h-11 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black uppercase text-[11px] tracking-wider rounded shadow transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                >
+                  <span>{language === 'bn' ? "সেভ করুন" : "Save"}</span>
                 </button>
               </div>
             </div>
@@ -1951,44 +2777,61 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
             </div>
 
             {/* Dynamic Results Card - updates real-time */}
-            <div className="bg-rose-50/50 p-5 rounded-xl border border-rose-200/60 shadow-xs space-y-3">
-              <h4 className="text-[11px] font-black text-rose-800 uppercase tracking-widest border-b border-rose-200/50 pb-1">
+            <div className="bg-rose-50/50 dark:bg-rose-950/10 p-5 rounded-xl border border-rose-200/60 dark:border-rose-900/30 shadow-xs space-y-4">
+              <h4 className="text-[11px] font-black text-rose-800 dark:text-rose-400 uppercase tracking-widest border-b border-rose-200/50 dark:border-rose-900/40 pb-1">
                 {language === 'bn' ? "মাইনাস হিসাবের লাইভ ফলাফল" : "Live Minus Calculation Result"}
               </h4>
+
+              {/* Highlighted Weight Difference Comparison section */}
+              <div className="bg-rose-100/40 dark:bg-rose-950/20 p-3 rounded-lg border border-rose-200/50 dark:border-rose-900/30 text-xs space-y-1">
+                <div className="flex justify-between text-slate-600 dark:text-slate-400 font-medium">
+                  <span>{language === 'bn' ? 'মোট ওজন:' : 'Total Weight:'}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{parseFloat(minusFormData.totalKg) || 0} KG</span>
+                </div>
+                <div className="flex justify-between text-slate-600 dark:text-slate-400 font-medium">
+                  <span>{language === 'bn' ? 'কর্তন বাদে নিট ওজন:' : 'Net Weight After Deduction:'}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{minusCalcResult.netWeight.toFixed(1)} KG</span>
+                </div>
+                <div className="flex justify-between text-rose-700 dark:text-rose-400 font-extrabold border-t border-rose-200/30 dark:border-rose-900/40 pt-1 mt-1 text-sm">
+                  <span>{language === 'bn' ? 'ওজন কর্তন বা ব্যবধান (লাল রঙের):' : 'Weight Gap / Difference (Red color):'}</span>
+                  <span className="font-black text-red-600 dark:text-red-400">{minusCalcResult.minusWeight.toFixed(1)} KG</span>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="text-xs text-slate-700">
-                    <span className="font-bold text-slate-500">
-                      {language === 'bn' ? "ওজন কর্তনের হার: " : "O वजन কর্তনের হার (Deduction Rate): "}
+                  <div className="text-xs text-slate-700 dark:text-slate-300">
+                    <span className="font-bold text-slate-500 dark:text-slate-400">
+                      {language === 'bn' ? "ওজন কর্তনের হার: " : "Deduction Rate: "}
                     </span>
-                    <span className="font-black text-rose-600">
+                    <span className="font-black text-rose-600 dark:text-rose-400">
                       {minusCalcResult.deductionPercentage.toFixed(1)}%
                     </span>
                   </div>
-                  <div className="text-xs text-slate-700">
-                    <span className="font-bold text-slate-500">
+                  <div className="text-xs text-slate-700 dark:text-slate-300">
+                    <span className="font-bold text-slate-500 dark:text-slate-400">
                       {language === 'bn' ? "কর্তন বাদে নিট ওজন: " : "Net Weight after deduction: "}
                     </span>
-                    <span className="font-black text-slate-900">
+                    <span className="font-black text-slate-900 dark:text-white">
                       {minusCalcResult.netWeight.toFixed(1)} কেজি (KG)
                     </span>
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-xs text-slate-700">
-                    <span className="font-bold text-slate-500">
+                  <div className="text-xs text-slate-700 dark:text-slate-300">
+                    <span className="font-bold text-slate-500 dark:text-slate-400">
                       {language === 'bn' ? "কর্তনকৃত হিসাবে প্রতি মনের মূল্য: " : "Effective Price per Mon: "}
                     </span>
-                    <span className="font-black text-emerald-600">
+                    <span className="font-black text-emerald-600 dark:text-emerald-400">
                       ৳{Math.round(minusCalcResult.effectivePrice)}
                     </span>
                   </div>
-                  <div className="text-xs text-slate-700">
-                    <span className="font-bold text-slate-500">
+                  <div className="text-xs text-slate-700 dark:text-slate-300">
+                    <span className="font-bold text-slate-500 dark:text-slate-400">
                       {language === 'bn' ? "এত কেজি কর্তনে মোট মণ: " : "Total Mon after deduction: "}
                     </span>
-                    <span className="font-black text-green-700 text-sm">
+                    <span className="font-black text-green-700 dark:text-green-400 text-sm">
                       {minusCalcResult.monCount} মন {minusCalcResult.extraKg} কেজি
                     </span>
                   </div>
@@ -1997,12 +2840,27 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
             </div>
 
             {/* Action Buttons */}
-            <div className="flex flex-col sm:flex-row gap-3 pt-2">
+            <div className="grid grid-cols-3 gap-2 pt-2">
               <button 
-                onClick={handleSaveMinusCalculation}
-                className="flex-1 h-11 bg-rose-600 hover:bg-rose-700 text-white font-black uppercase text-[11px] tracking-wider rounded shadow transition-all active:scale-95 flex items-center justify-center gap-2"
+                type="button"
+                onClick={handleClearMinus}
+                className="h-11 px-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 font-black uppercase text-[10px] tracking-wider rounded border border-slate-200 dark:border-slate-700 transition-all active:scale-95 flex items-center justify-center gap-1"
               >
-                <span>{language === 'bn' ? "হিসাবটি খতিয়ানে সেভ করুন" : "Save Calculation"}</span>
+                <span>{language === 'bn' ? "ক্লিয়ার" : "Clear"}</span>
+              </button>
+              <button 
+                type="button"
+                onClick={handleCalculateMinus}
+                className="h-11 px-2 bg-yellow-400 hover:bg-yellow-500 text-slate-950 font-black uppercase text-[10px] tracking-wider rounded shadow transition-all active:scale-95 flex items-center justify-center gap-1"
+              >
+                <span>{language === 'bn' ? "হিসাব করুন" : "Calculate"}</span>
+              </button>
+              <button 
+                type="button"
+                onClick={handleSaveMinusCalculation}
+                className="h-11 px-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black uppercase text-[10px] tracking-wider rounded shadow transition-all active:scale-95 flex items-center justify-center gap-1"
+              >
+                <span>{language === 'bn' ? "সেভ করুন" : "Save"}</span>
               </button>
             </div>
           </div>
@@ -2030,6 +2888,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
           onCopy={handleCopy}
           onSaveImage={handleSaveImage}
           isCalculated={previewResult !== null}
+          isSaved={isSaved}
           t={t}
           language={language}
           receiptVisibility={receiptVisibility}
@@ -2046,6 +2905,7 @@ interface CompactReceiptProps {
   onCopy: () => void;
   onSaveImage: () => void;
   isCalculated: boolean;
+  isSaved: boolean;
   t: any;
   language: 'bn' | 'en';
   receiptVisibility: ReceiptVisibility;
@@ -2058,6 +2918,7 @@ function CompactReceipt({
   onCopy, 
   onSaveImage, 
   isCalculated, 
+  isSaved,
   t, 
   language,
   receiptVisibility,
@@ -2067,8 +2928,18 @@ function CompactReceipt({
     <div className={`bg-white dark:bg-slate-900 border-4 border-yellow-400 dark:border-yellow-500 rounded-xl p-6 shadow-xl font-mono text-xs transition-all relative overflow-hidden text-slate-900 dark:text-slate-100 ${!isCalculated ? 'opacity-70' : ''}`}>
       
       {/* Decorative Stamp badge */}
-      <div className="absolute top-10 right-4 transform rotate-12 border-2 border-dashed border-red-500 text-red-500 text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-widest select-none bg-white/80 dark:bg-slate-800/80">
-        {isCalculated ? (language === 'bn' ? 'প্রিভিউ রেডি' : 'READY') : (language === 'bn' ? 'হিসাব করুন' : 'UNSAVED')}
+      <div className={`absolute top-10 right-4 transform rotate-12 border-2 border-dashed text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-widest select-none bg-white/80 dark:bg-slate-800/80 ${
+        isCalculated 
+          ? isSaved 
+            ? 'border-green-600 text-green-600' 
+            : 'border-amber-500 text-amber-500 animate-pulse'
+          : 'border-red-500 text-red-500'
+      }`}>
+        {isCalculated 
+          ? isSaved 
+            ? (language === 'bn' ? 'সেভ করা হয়েছে' : 'SAVED') 
+            : (language === 'bn' ? 'সেভ করা হয়নি' : 'UNSAVED DRAFT')
+          : (language === 'bn' ? 'হিসাব করুন' : 'NOT CALCULATED')}
       </div>
 
       <div className="text-center border-b-2 border-slate-100 dark:border-slate-800 pb-4 mb-4">
@@ -2152,11 +3023,19 @@ function CompactReceipt({
 
       {/* Primary manual Action triggered to Save in ledger */}
       {isCalculated ? (
-        <div className="space-y-2 mb-4">
-          <div className="w-full py-2.5 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900/30 text-green-700 dark:text-green-400 font-extrabold rounded text-center text-xs flex items-center justify-center gap-2 shadow-sm">
-            <span>✔ {language === 'bn' ? 'সফটওয়্যারে অটো সেভ করা হয়েছে!' : 'Auto-Saved of calculation successful!'}</span>
+        isSaved ? (
+          <div className="space-y-2 mb-4">
+            <div className="w-full py-2.5 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900/30 text-green-700 dark:text-green-400 font-extrabold rounded text-center text-xs flex items-center justify-center gap-2 shadow-sm">
+              <span>✔ {language === 'bn' ? 'খতিয়ানে সফলভাবে সেভ করা হয়েছে!' : 'Saved to Ledger database successfully!'}</span>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="space-y-2 mb-4">
+            <div className="w-full py-2.5 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 text-amber-700 dark:text-amber-400 font-extrabold rounded text-center text-xs flex items-center justify-center gap-2 shadow-sm animate-pulse">
+              <span>⚠️ {language === 'bn' ? 'খসড়া হিসাব (সেভ বাটন চেপে সেভ করুন)' : 'Draft (Click Save Button to save to ledger)'}</span>
+            </div>
+          </div>
+        )
       ) : (
         <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded text-center text-slate-400 dark:text-slate-500 text-[10px] font-bold border border-slate-100 dark:border-slate-800 mb-4 uppercase">
           {t.notCalculated}
@@ -2335,8 +3214,10 @@ function HistorySection({
                       <div className="font-bold text-slate-600 mt-0.5 text-xs">
                         {calc.totalKg} KG
                         {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
-                          <div className="text-[9px] text-rose-500 font-black">
-                            -{calc.deductedWeight.toFixed(1)} KG ({calc.deductionPercentage?.toFixed(1)}%)
+                          <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1 rounded mt-1 text-slate-500 dark:text-slate-400 font-semibold space-y-0.5">
+                            <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
+                            <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
+                            <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
                           </div>
                         )}
                       </div>
@@ -2439,8 +3320,10 @@ function HistorySection({
                       <td className="px-3 py-3 text-slate-600 font-bold whitespace-nowrap">
                         <div>{calc.totalKg} KG</div>
                         {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
-                          <div className="text-[10px] text-rose-500 font-black">
-                            -{calc.deductedWeight.toFixed(1)} KG ({calc.deductionPercentage?.toFixed(1)}%)
+                          <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1.5 rounded mt-1 text-slate-500 dark:text-slate-400 font-semibold space-y-0.5 min-w-[130px]">
+                            <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
+                            <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
+                            <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
                           </div>
                         )}
                       </td>

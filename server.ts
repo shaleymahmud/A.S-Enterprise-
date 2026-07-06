@@ -11,15 +11,26 @@ app.use(express.json());
 
 const PORT = 3000;
 
-// Initialize Gemini securely with process.env.GEMINI_API_KEY
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+// Initialize Gemini securely with process.env.GEMINI_API_KEY (Lazy initialization helper)
+let aiInstance: GoogleGenAI | null = null;
+
+function getAI() {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+      throw new Error("GEMINI_API_KEY is missing or invalid. Please configure it in the Secrets panel of AI Studio.");
     }
+    aiInstance = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
-});
+  return aiInstance;
+}
 
 // API route for the Gemini Intelligence Assistant Chatbot
 app.post("/api/gemini/assistant", async (req, res) => {
@@ -29,6 +40,16 @@ app.post("/api/gemini/assistant", async (req, res) => {
     if (!prompt) {
       return res.status(400).json({ error: "Prompt is required" });
     }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+      return res.json({
+        text: "প্রিয় অপারেটর, এআই সহকারীর (AI Assistant) সাথে কথা বলার জন্য প্রথমে আপনার 'GEMINI_API_KEY' সেট করতে হবে। অনুগ্রহ করে AI Studio এর Settings (গিয়ার আইকন) -> Secrets মেনু থেকে 'GEMINI_API_KEY' যোগ করুন।",
+        action: null
+      });
+    }
+
+    const ai = getAI();
 
     // Capture the current local time for correct context
     const currentLocalTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" });
