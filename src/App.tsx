@@ -26,7 +26,8 @@ import {
   Building,
   Sun,
   Moon,
-  Search
+  Search,
+  RotateCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import AssistantSection from './components/AssistantSection';
@@ -70,6 +71,9 @@ interface Calculation {
   isMinusCalculated?: boolean;
   targetMonPrice?: number;
   getEntryNo?: number;
+  isDeleted?: boolean;
+  deletedBy?: string;
+  deletedAt?: number;
 }
 
 interface Note {
@@ -486,16 +490,17 @@ export default function App() {
   }, [notes]);
 
   const expectedNextChallan = useMemo(() => {
-    if (calculations.length === 0) {
+    const active = calculations.filter(c => c.isDeleted !== true);
+    if (active.length === 0) {
       return defaultChallan;
     }
-    const latest = calculations[0];
+    const latest = active[0];
     return (latest.challanNo !== undefined ? latest.challanNo : defaultChallan) + 1;
   }, [calculations, defaultChallan]);
 
   // --- Handlers ---
 
-  const addCalculation = async (calc: Omit<Calculation, 'createdBy'>) => {
+  const addCalculation = async (calc: Omit<Calculation, 'createdBy'>): Promise<boolean> => {
     try {
       const newCalc = {
         ...calc,
@@ -505,20 +510,54 @@ export default function App() {
       
       // Save directly to Firestore calculations collection
       await addDoc(collection(db, 'calculations'), newCalc);
+      return true;
     } catch (err: any) {
       console.error("Error adding calculation document: ", err);
       alert(language === 'bn' ? 'ডাটাবেজে সেভ করতে ত্রুটি হয়েছে!' : 'Error saving to database: ' + err.message);
+      return false;
     }
   };
 
   const deleteCalculation = async (id: string) => {
-    const confirmation = language === 'bn' ? 'আপনি কি এই রেকর্ডটি মুছে ফেলতে চান?' : 'Are you sure you want to delete this record?';
+    const confirmation = language === 'bn' ? 'আপনি কি এই হিসাবের রেকর্ডটি মুছে ফেলতে চান (ট্র্যাশ বক্সে যাবে)?' : 'Are you sure you want to delete this record (it will move to Trash Box)?';
+    if (confirm(confirmation)) {
+      try {
+        const deletedByVal = currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest');
+        await updateDoc(doc(db, 'calculations', id), {
+          isDeleted: true,
+          deletedBy: deletedByVal,
+          deletedAt: Date.now()
+        });
+      } catch (err: any) {
+        console.error("Error deleting doc: ", err);
+        alert(language === 'bn' ? 'রেকর্ডটি ডিলিট করতে সমস্যা হয়েছে!' : 'Error deleting record: ' + err.message);
+      }
+    }
+  };
+
+  const restoreCalculation = async (id: string) => {
+    try {
+      await updateDoc(doc(db, 'calculations', id), {
+        isDeleted: false,
+        deletedBy: null,
+        deletedAt: null
+      });
+    } catch (err: any) {
+      console.error("Error restoring doc: ", err);
+      alert(language === 'bn' ? 'রেকর্ডটি পুনরুদ্ধার করতে সমস্যা হয়েছে!' : 'Error restoring record: ' + err.message);
+    }
+  };
+
+  const permanentDeleteCalculation = async (id: string) => {
+    const confirmation = language === 'bn' 
+      ? 'আপনি কি চিরতরে এই রেকর্ডটি ডিলিট করতে চান? এটি আর কোনোভাবেই পুনরুদ্ধার করা যাবে না!' 
+      : 'Are you sure you want to PERMANENTLY delete this record? This action is IRREVERSIBLE!';
     if (confirm(confirmation)) {
       try {
         await deleteDoc(doc(db, 'calculations', id));
       } catch (err: any) {
-        console.error("Error deleting doc: ", err);
-        alert(language === 'bn' ? 'রেকর্ডটি ডিলিট করতে সমস্যা হয়েছে!' : 'Error deleting record: ' + err.message);
+        console.error("Error permanently deleting doc: ", err);
+        alert(language === 'bn' ? 'চিরতরে ডিলিট করতে সমস্যা হয়েছে!' : 'Error permanently deleting record: ' + err.message);
       }
     }
   };
@@ -573,12 +612,17 @@ export default function App() {
   // If user role is "admin", they see all records. Otherwise they only see records they created!
   const scopedCalculations = useMemo(() => {
     const isUserAdmin = userRole === 'admin';
+    const active = calculations.filter(c => c.isDeleted !== true);
     if (isUserAdmin) {
-      return calculations;
+      return active;
     }
     // standard user only sees their own calculations
-    return calculations.filter(c => c.createdBy === currentUserEmail || c.createdBy === currentUser);
+    return active.filter(c => c.createdBy === currentUserEmail || c.createdBy === currentUser);
   }, [calculations, userRole, currentUserEmail, currentUser]);
+
+  const deletedCalculations = useMemo(() => {
+    return calculations.filter(c => c.isDeleted === true);
+  }, [calculations]);
 
   const filteredCalculations = useMemo(() => {
     const now = Date.now();
@@ -621,7 +665,7 @@ export default function App() {
 
   const todayCalculationsCount = useMemo(() => {
     const startOfDay = new Date().setHours(0, 0, 0, 0);
-    return calculations.filter(c => c.timestamp >= startOfDay).length;
+    return calculations.filter(c => c.timestamp >= startOfDay && c.isDeleted !== true).length;
   }, [calculations]);
 
   // Active translations
@@ -908,8 +952,11 @@ export default function App() {
                 language={language} 
                 calculations={searchedCalculations}
                 allCalculations={scopedCalculations}
+                deletedCalculations={deletedCalculations}
                 onDelete={deleteCalculation}
                 onEdit={editCalculation}
+                onRestore={restoreCalculation}
+                onPermanentDelete={permanentDeleteCalculation}
                 userRole={userRole}
               />
             </motion.div>
@@ -1265,8 +1312,11 @@ interface HomeSectionProps {
   language: 'bn' | 'en';
   calculations: Calculation[];
   allCalculations: Calculation[];
+  deletedCalculations: Calculation[];
   onDelete: (id: string) => void;
   onEdit: (updated: Calculation) => void;
+  onRestore: (id: string) => void;
+  onPermanentDelete: (id: string) => void;
   userRole: 'admin' | 'guest' | null;
 }
 
@@ -1279,10 +1329,14 @@ function HomeSection({
   language,
   calculations = [],
   allCalculations = [],
+  deletedCalculations = [],
   onDelete,
   onEdit,
+  onRestore,
+  onPermanentDelete,
   userRole
 }: HomeSectionProps) {
+  const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
   const [operatorFilter, setOperatorFilter] = useState('ALL');
@@ -1311,6 +1365,16 @@ function HomeSection({
       return matchesOperator && matchesSearch;
     });
   }, [calculations, searchQuery, operatorFilter]);
+
+  // Filter deleted calculations based on search query
+  const filteredDeletedList = useMemo(() => {
+    return deletedCalculations.filter(calc => {
+      const query = searchQuery.toLowerCase().trim();
+      return !query || 
+        calc.sellerName.toLowerCase().includes(query) || 
+        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query));
+    });
+  }, [deletedCalculations, searchQuery]);
 
   return (
     <div className="space-y-6">
@@ -1398,13 +1462,48 @@ function HomeSection({
       {/* Admin Specific Operations Logs Table */}
       {userRole === 'admin' && (
         <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden mt-6 animate-fadeIn">
+          {/* Sub Tab Switcher */}
+          <div className="flex border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 p-2 gap-2">
+            <button
+              onClick={() => setActiveSubTab('active')}
+              className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeSubTab === 'active'
+                  ? 'bg-yellow-400 text-black shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <span>{language === 'bn' ? 'সক্রিয় হিসাবপত্র' : 'Active Calculations'}</span>
+            </button>
+            <button
+              onClick={() => setActiveSubTab('trash')}
+              className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeSubTab === 'trash'
+                  ? 'bg-rose-600 text-white shadow-sm font-black'
+                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Trash2 size={13} />
+              <span>{language === 'bn' ? 'ট্র্যাশ বক্স' : 'Trash Box'}</span>
+              {deletedCalculations.length > 0 && (
+                <span className="bg-white text-rose-600 text-[10px] font-black px-1.5 py-0.5 rounded-full border border-rose-200 leading-none">
+                  {deletedCalculations.length}
+                </span>
+              )}
+            </button>
+          </div>
+
           <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <div>
               <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
-                {language === 'bn' ? "দৈনিক চালান বিবরণ খাতা" : "Daily Calculations Table"}
+                {activeSubTab === 'active' 
+                  ? (language === 'bn' ? "দৈনিক চালান বিবরণ খাতা" : "Daily Calculations Table")
+                  : (language === 'bn' ? "ট্র্যাশ বিন (মুছে ফেলা হিসাবসমূহ)" : "Trash Bin (Deleted Calculations)")}
               </h3>
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
-                {filteredList.length} {language === 'bn' ? 'টি রেকর্ড খুঁজে পাওয়া গেছে' : 'records found matching criteria'}
+                {activeSubTab === 'active' 
+                  ? `${filteredList.length} ${language === 'bn' ? 'টি রেকর্ড খুঁজে পাওয়া গেছে' : 'records found matching criteria'}`
+                  : `${filteredDeletedList.length} ${language === 'bn' ? 'টি মুছে ফেলা রেকর্ড পাওয়া গেছে' : 'deleted records found'}`
+                }
               </p>
             </div>
 
@@ -1429,8 +1528,8 @@ function HomeSection({
                 )}
               </div>
 
-              {/* Operator select filter */}
-              {operators.length > 0 && (
+              {/* Operator select filter (only for active calculations) */}
+              {activeSubTab === 'active' && operators.length > 0 && (
                 <div className="flex items-center gap-2 bg-white dark:bg-slate-900 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-800 h-8">
                   <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400">{language === 'bn' ? 'অপারেটর' : 'Operator'}:</span>
                   <select
@@ -1448,92 +1547,153 @@ function HomeSection({
             </div>
           </div>
 
-          {filteredList.length === 0 ? (
+          {((activeSubTab === 'active' && filteredList.length === 0) || (activeSubTab === 'trash' && filteredDeletedList.length === 0)) ? (
             <div className="p-12 text-center text-slate-300 font-bold uppercase text-[10px]">
-              {language === 'bn' ? "কোনো চালান পাওয়া যায়নি" : "No entries found matching criteria"}
+              {activeSubTab === 'active'
+                ? (language === 'bn' ? "কোনো চালান পাওয়া যায়নি" : "No entries found matching criteria")
+                : (language === 'bn' ? "ট্র্যাশ বক্স খালি!" : "Trash Box is empty!")
+              }
             </div>
           ) : (
             <>
               {/* Mobile Card List View */}
               <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
-                {filteredList.map((calc) => {
-                  const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                    ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                    : calc.totalKg;
-                  const monCount = Math.floor(netKg / calc.monType);
-                  const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
-                  return (
-                    <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-black text-slate-400">
-                          📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px]">
-                            #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                {activeSubTab === 'active' ? (
+                  filteredList.map((calc) => {
+                    const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                      ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                      : calc.totalKg;
+                    const monCount = Math.floor(netKg / calc.monType);
+                    const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                    return (
+                      <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-black text-slate-400">
+                            📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
                           </span>
-                          {calc.getEntryNo !== undefined && (
-                            <span className="font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 text-[9px]">
-                              {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px]">
+                              #{calc.challanNo !== undefined ? calc.challanNo : '---'}
                             </span>
-                          )}
-                        </div>
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-3 bg-slate-50/50 dark:bg-slate-950/20 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800/50">
-                        <div>
-                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
-                          <div className="font-black text-slate-800 dark:text-slate-200 flex flex-wrap items-center gap-1 mt-0.5">
-                            {calc.sellerName}
-                            {calc.isMinusCalculated && (
-                              <span className="inline-block text-[8px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase scale-90 origin-left">
-                                {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                            {calc.getEntryNo !== undefined && (
+                              <span className="font-black text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 text-[9px]">
+                                {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
                               </span>
                             )}
                           </div>
                         </div>
-                        <div>
-                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
-                          <div className="font-black text-emerald-600 text-sm mt-0.5">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
-                        </div>
-                        <div>
-                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
-                          <div className="font-bold text-slate-600 dark:text-slate-400 mt-0.5 text-xs">
-                            {calc.totalKg} KG
+                        
+                        <div className="grid grid-cols-2 gap-3 bg-slate-50/50 dark:bg-slate-950/20 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800/50">
+                          <div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
+                            <div className="font-black text-slate-800 dark:text-slate-200 flex flex-wrap items-center gap-1 mt-0.5">
+                              {calc.sellerName}
+                              {calc.isMinusCalculated && (
+                                <span className="inline-block text-[8px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase scale-90 origin-left">
+                                  {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
+                            <div className="font-black text-emerald-600 text-sm mt-0.5">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
+                            <div className="font-bold text-slate-600 dark:text-slate-400 mt-0.5 text-xs">
+                              {calc.totalKg} KG
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'রূপান্তরিত ওজন' : 'Converted Weight'}</div>
+                            <div className="font-bold text-green-700 dark:text-green-400 mt-0.5 text-xs">
+                              {monCount} M {extraKg} KG
+                            </div>
                           </div>
                         </div>
-                        <div>
-                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'রূপান্তরিত ওজন' : 'Converted Weight'}</div>
-                          <div className="font-bold text-green-700 dark:text-green-400 mt-0.5 text-xs">
-                            {monCount} M {extraKg} KG
-                          </div>
-                        </div>
-                      </div>
 
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
-                        <span className="text-[9px] font-black uppercase text-slate-400">
-                          👤 BY: {calc.createdBy || 'Guest'}
-                        </span>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
+                          <span className="text-[9px] font-black uppercase text-slate-400">
+                            👤 BY: {calc.createdBy || 'Guest'}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={() => setEditingCalc(calc)}
+                              className="flex items-center gap-1 bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 border border-blue-200 dark:border-blue-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95"
+                            >
+                              <Edit size={12} />
+                              <span>{language === 'bn' ? 'সম্পাদনা' : 'Edit'}</span>
+                            </button>
+                            <button 
+                              onClick={() => onDelete(calc.id)} 
+                              className="flex items-center gap-1 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 hover:bg-red-100 border border-red-200 dark:border-red-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95"
+                            >
+                              <Trash2 size={12} />
+                              <span>{language === 'bn' ? 'মুছুন' : 'Delete'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  filteredDeletedList.map((calc) => {
+                    const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                      ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                      : calc.totalKg;
+                    const monCount = Math.floor(netKg / calc.monType);
+                    const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                    return (
+                      <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 bg-rose-50/10 dark:bg-rose-950/5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-black text-slate-400">
+                            📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                          </span>
+                          <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px] line-through">
+                            #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                          </span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-3 bg-slate-50/50 dark:bg-slate-950/20 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800/50">
+                          <div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
+                            <div className="font-black text-slate-400 line-through mt-0.5">{calc.sellerName}</div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
+                            <div className="font-black text-slate-400 line-through mt-0.5 text-sm">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
+                            <div className="font-bold text-slate-400 line-through mt-0.5 text-xs">{calc.totalKg} KG</div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] text-rose-500 font-black uppercase tracking-wider">{language === 'bn' ? 'ডিলেট করেছেন' : 'Deleted By'}</div>
+                            <div className="font-bold text-rose-600 dark:text-rose-400 mt-0.5 text-[10px] truncate">{calc.deletedBy || calc.createdBy || 'Unknown'}</div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
                           <button 
-                            onClick={() => setEditingCalc(calc)}
-                            className="flex items-center gap-1 bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 border border-blue-200 dark:border-blue-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95"
+                            onClick={() => onRestore(calc.id)}
+                            className="flex items-center gap-1 bg-green-500 hover:bg-green-600 text-white px-3 py-1.5 rounded-lg font-black text-xs transition-all cursor-pointer active:scale-95"
                           >
-                            <Edit size={12} />
-                            <span>{language === 'bn' ? 'সম্পাদনা' : 'Edit'}</span>
+                            <RotateCcw size={11} />
+                            <span>{language === 'bn' ? 'পুনরুদ্ধার' : 'Restore'}</span>
                           </button>
                           <button 
-                            onClick={() => onDelete(calc.id)} 
-                            className="flex items-center gap-1 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 hover:bg-red-100 border border-red-200 dark:border-red-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95"
+                            onClick={() => onPermanentDelete(calc.id)} 
+                            className="flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 rounded-lg font-black text-xs transition-all cursor-pointer active:scale-95"
                           >
-                            <Trash2 size={12} />
-                            <span>{language === 'bn' ? 'মুছুন' : 'Delete'}</span>
+                            <Trash2 size={11} />
+                            <span>{language === 'bn' ? 'চিরতরে মুছুন' : 'Permanent'}</span>
                           </button>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
 
               {/* Desktop Table View */}
@@ -1548,91 +1708,159 @@ function HomeSection({
                       <th className="px-3 py-3">Mon</th>
                       <th className="px-3 py-3">Rate</th>
                       <th className="px-4 py-3">Total</th>
-                      <th className="px-3 py-3">Operator</th>
+                      <th className="px-3 py-3">{activeSubTab === 'active' ? 'Operator' : 'Deleted By'}</th>
                       <th className="px-4 py-3">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {filteredList.map((calc) => {
-                      const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                        ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                        : calc.totalKg;
-                      const monCount = Math.floor(netKg / calc.monType);
-                      const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
-                      return (
-                        <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
-                          <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
-                            {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
-                          </td>
-                          <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
-                            <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
-                            {calc.getEntryNo !== undefined && (
-                              <div className="text-[9px] text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 inline-block font-black mt-1">
-                                {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-3 py-3 font-black">
-                            {calc.sellerName}
-                            {calc.isMinusCalculated && (
-                              <span className="ml-1.5 inline-block text-[9px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase">
-                                {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                    {activeSubTab === 'active' ? (
+                      filteredList.map((calc) => {
+                        const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                          ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                          : calc.totalKg;
+                        const monCount = Math.floor(netKg / calc.monType);
+                        const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                        return (
+                          <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
+                            <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
+                              {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                            </td>
+                            <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
+                              <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
+                              {calc.getEntryNo !== undefined && (
+                                <div className="text-[9px] text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 inline-block font-black mt-1">
+                                  {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 font-black">
+                              {calc.sellerName}
+                              {calc.isMinusCalculated && (
+                                <span className="ml-1.5 inline-block text-[9px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase">
+                                  {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 font-bold whitespace-nowrap">
+                              <div>{calc.totalKg} KG</div>
+                              {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
+                                <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1.5 rounded mt-1 text-slate-500 dark:text-slate-450 font-semibold space-y-0.5 min-w-[130px]">
+                                  <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
+                                  <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
+                                  <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 font-bold text-green-700 dark:text-green-400 whitespace-nowrap">
+                              <div>{monCount} M {extraKg} KG</div>
+                              {calc.isMinusCalculated && (
+                                <div className="text-[9px] text-slate-455 font-bold">
+                                  {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 text-slate-500 font-bold whitespace-nowrap">
+                              <div>৳{calc.ratePerMon}</div>
+                              {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
+                                <div className="text-[9px] text-emerald-600 font-extrabold">
+                                  Target: ৳{calc.targetMonPrice}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 font-black text-slate-900 dark:text-white">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                                {calc.createdBy || 'Guest'}
                               </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-3 font-bold whitespace-nowrap">
-                            <div>{calc.totalKg} KG</div>
-                            {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
-                              <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1.5 rounded mt-1 text-slate-500 dark:text-slate-450 font-semibold space-y-0.5 min-w-[130px]">
-                                <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
-                                <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
-                                <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-1.5">
+                                <button 
+                                  onClick={() => setEditingCalc(calc)}
+                                  className="text-slate-400 hover:text-blue-600 p-1.5 rounded hover:bg-slate-100/80 dark:hover:bg-slate-800 transition-all"
+                                  title={language === 'bn' ? 'সম্পাদনা করুন' : 'Edit record'}
+                                >
+                                  <Edit size={13} />
+                                </button>
+                                <button 
+                                  onClick={() => onDelete(calc.id)} 
+                                  className="text-red-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50/80 dark:hover:bg-slate-800 transition-all"
+                                  title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete record'}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
                               </div>
-                            )}
-                          </td>
-                          <td className="px-3 py-3 font-bold text-green-700 dark:text-green-400 whitespace-nowrap">
-                            <div>{monCount} M {extraKg} KG</div>
-                            {calc.isMinusCalculated && (
-                              <div className="text-[9px] text-slate-450 font-bold">
-                                {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      filteredDeletedList.map((calc) => {
+                        const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
+                          ? Math.max(0, calc.totalKg - calc.deductedWeight) 
+                          : calc.totalKg;
+                        const monCount = Math.floor(netKg / calc.monType);
+                        const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                        return (
+                          <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
+                            <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
+                              {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                            </td>
+                            <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
+                              <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
+                              {calc.getEntryNo !== undefined && (
+                                <div className="text-[9px] text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 inline-block font-black mt-1">
+                                  {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 font-black text-slate-450 line-through">
+                              {calc.sellerName}
+                              {calc.isMinusCalculated && (
+                                <span className="ml-1.5 inline-block text-[9px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase">
+                                  {language === 'bn' ? 'মাইনাস' : 'Minus'}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 font-bold whitespace-nowrap text-slate-450 line-through">
+                              <div>{calc.totalKg} KG</div>
+                            </td>
+                            <td className="px-3 py-3 font-bold text-slate-455 whitespace-nowrap line-through">
+                              <div>{monCount} M {extraKg} KG</div>
+                            </td>
+                            <td className="px-3 py-3 text-slate-450 font-bold whitespace-nowrap line-through">
+                              <div>৳{calc.ratePerMon}</div>
+                            </td>
+                            <td className="px-4 py-3 font-black text-slate-400 line-through">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40">
+                                🗑️ {calc.deletedBy || calc.createdBy || 'Unknown'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                <button 
+                                  onClick={() => onRestore(calc.id)}
+                                  className="flex items-center gap-1 bg-green-500 hover:bg-green-600 text-white px-2.5 py-1 rounded text-[10px] font-black transition-all cursor-pointer shadow-sm active:scale-95"
+                                  title={language === 'bn' ? 'পুনরুদ্ধার করুন' : 'Restore Record'}
+                                >
+                                  <RotateCcw size={10} />
+                                  <span>{language === 'bn' ? 'পুনরুদ্ধার' : 'Restore'}</span>
+                                </button>
+                                <button 
+                                  onClick={() => onPermanentDelete(calc.id)} 
+                                  className="flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 rounded text-[10px] font-black transition-all cursor-pointer shadow-sm active:scale-95"
+                                  title={language === 'bn' ? 'চিরতরে মুছুন' : 'Delete Permanently'}
+                                >
+                                  <Trash2 size={10} />
+                                  <span>{language === 'bn' ? 'চিরতরে' : 'Permanent'}</span>
+                                </button>
                               </div>
-                            )}
-                          </td>
-                          <td className="px-3 py-3 text-slate-500 font-bold whitespace-nowrap">
-                            <div>৳{calc.ratePerMon}</div>
-                            {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
-                              <div className="text-[9px] text-emerald-600 font-extrabold">
-                                Target: ৳{calc.targetMonPrice}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 font-black text-slate-900 dark:text-white">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
-                          <td className="px-3 py-3 whitespace-nowrap">
-                            <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                              {calc.createdBy || 'Guest'}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              <button 
-                                onClick={() => setEditingCalc(calc)}
-                                className="text-slate-400 hover:text-blue-600 p-1.5 rounded hover:bg-slate-100/80 dark:hover:bg-slate-800 transition-all"
-                                title={language === 'bn' ? 'সম্পাদনা করুন' : 'Edit record'}
-                              >
-                                <Edit size={13} />
-                              </button>
-                              <button 
-                                onClick={() => onDelete(calc.id)} 
-                                className="text-red-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50/80 dark:hover:bg-slate-800 transition-all"
-                                title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete record'}
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1846,7 +2074,7 @@ function CompactStatCard({ label, value, unit, bg, text = 'text-slate-800 dark:t
 // --- Calculator ---
 
 interface CalculatorProps {
-  onSave: (calc: Omit<Calculation, 'createdBy'>) => void;
+  onSave: (calc: Omit<Calculation, 'createdBy'>) => Promise<boolean>;
   expectedNextChallan: number;
   language: 'bn' | 'en';
   t: any;
@@ -2003,7 +2231,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     setIsSaved(false);
   };
 
-  const handleSaveCalculation = () => {
+  const handleSaveCalculation = async () => {
     if (!formData.challanNo) {
       alert(t.alertChallanMust);
       return;
@@ -2053,7 +2281,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     }
 
     // Save to DB!
-    onSave({
+    const success = await onSave({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       sellerName: calculated.sellerName,
@@ -2064,6 +2292,10 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       totalPrice: calculated.price,
       challanNo: calculated.challanNo
     });
+
+    if (!success) {
+      return; // Stop execution on failure
+    }
 
     setPreviewResult(calculated);
     setIsSaved(true);
@@ -2144,7 +2376,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     setIsSaved(false);
   };
 
-  const handleSaveMinusCalculation = () => {
+  const handleSaveMinusCalculation = async () => {
     if (!minusFormData.challanNo) {
       alert(t.alertChallanMust);
       return;
@@ -2190,7 +2422,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     };
 
     // Save to DB!
-    onSave({
+    const success = await onSave({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       sellerName: calculated.sellerName,
@@ -2205,6 +2437,10 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       isMinusCalculated: true,
       targetMonPrice: calculated.targetMonPrice
     });
+
+    if (!success) {
+      return; // Stop execution on failure
+    }
 
     setPreviewResult(calculated);
     setIsSaved(true);
