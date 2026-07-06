@@ -51,6 +51,21 @@ import {
   onSnapshot 
 } from 'firebase/firestore';
 
+// Helper to strip undefined values so Firestore doesn't crash on saving/updating
+const cleanUndefined = (obj: any): any => {
+  const newObj: any = {};
+  Object.keys(obj).forEach(key => {
+    if (obj[key] !== undefined) {
+      if (obj[key] !== null && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+        newObj[key] = cleanUndefined(obj[key]);
+      } else {
+        newObj[key] = obj[key];
+      }
+    }
+  });
+  return newObj;
+};
+
 // --- Types ---
 
 type MonType = 40 | 41 | 42 | 43;
@@ -428,7 +443,7 @@ export default function App() {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list: Calculation[] = [];
       snapshot.forEach((docSnap) => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as Calculation);
+        list.push({ ...docSnap.data(), id: docSnap.id } as Calculation);
       });
       const sorted = recalculateDailySequences(list);
       setCalculations(sorted);
@@ -502,11 +517,11 @@ export default function App() {
 
   const addCalculation = async (calc: Omit<Calculation, 'createdBy'>): Promise<boolean> => {
     try {
-      const newCalc = {
+      const newCalc = cleanUndefined({
         ...calc,
         createdBy: currentUserEmail || currentUser || 'Guest',
         createdByName: currentUser || 'Operator'
-      };
+      });
       
       // Save directly to Firestore calculations collection
       await addDoc(collection(db, 'calculations'), newCalc);
@@ -565,7 +580,8 @@ export default function App() {
   const editCalculation = async (updated: Calculation) => {
     try {
       const { id, ...dataToUpdate } = updated;
-      await updateDoc(doc(db, 'calculations', id), dataToUpdate);
+      const cleanedData = cleanUndefined(dataToUpdate);
+      await updateDoc(doc(db, 'calculations', id), cleanedData);
     } catch (err: any) {
       console.error("Error editing doc: ", err);
       alert(language === 'bn' ? 'রেকর্ডটি এডিট করতে সমস্যা হয়েছে!' : 'Error editing record: ' + err.message);
