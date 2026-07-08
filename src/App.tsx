@@ -1688,34 +1688,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* General settings default challan */}
-                  <div className="p-6 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg border border-yellow-100 dark:border-yellow-900/30 max-w-xl">
-                    <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider mb-2">
-                       {language === 'bn' ? 'চালান নং ক্রমিক নির্ধারণ' : 'Challan Sequence Bootstrap'}
-                    </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 leading-relaxed">
-                      {language === 'bn' 
-                        ? 'ডিফল্ট চালানের নম্বরটি নির্ধারণ করুন। আপনার পূর্বের কোনো হিসাব না থাকলে অ্যাপ এখান থেকে আপনার সিরিয়াল গণনা শুরু করবে।' 
-                        : 'Specify target startup serial. Automatic increment logic relies on this index if history is cleared.'}
-                    </p>
-                    <div className="max-w-xs">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
-                        {language === 'bn' ? 'ডিফল্ট শুরু চালান নং' : 'Fallback Next Challan'}
-                      </label>
-                      <input 
-                        type="number" 
-                        className="w-full px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-sm font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 focus:border-yellow-400 outline-none"
-                        value={defaultChallan}
-                        placeholder="e.g. 601"
-                        onChange={e => {
-                          const val = parseInt(e.target.value) || 0;
-                          setDefaultChallan(val);
-                          localStorage.setItem('as_enterprise_default_challan', val.toString());
-                        }}
-                      />
-                    </div>
-                  </div>
-
                   {/* Centralized Master Counter Setting for Admin Only */}
                   {userRole === 'admin' && (
                     <div className="p-6 bg-indigo-50 dark:bg-indigo-950/20 rounded-lg border border-indigo-100 dark:border-indigo-900/30 max-w-xl space-y-4">
@@ -1755,21 +1727,33 @@ export default function App() {
                               alert(language === 'bn' ? 'অনুগ্রহ করে একটি সঠিক সংখ্যা দিন!' : 'Please enter a valid positive number!');
                               return;
                             }
-                            if (confirm(language === 'bn' ? `আপনি কি প্রধান চালান নম্বরটি পরিবর্তন করে ${val} করতে চান?` : `Are you sure you want to set the Master Counter to ${val}?`)) {
-                              try {
-                                const docRef = doc(db, 'settings', 'master_counters');
-                                await setDoc(docRef, {
-                                  currentChallanNo: val,
-                                  lastUpdated: Date.now(),
-                                  lastUpdatedBy: currentUserEmail || currentUser || 'Admin'
-                                }, { merge: true });
-                                alert(language === 'bn' ? 'মাস্টার চালান নাম্বারটি সফলভাবে আপডেট করা হয়েছে!' : 'Master counter successfully updated in Firestore!');
-                                setAdminStartingChallanInput('');
-                              } catch (err: any) {
-                                console.error("Error setting master counter: ", err);
-                                alert(language === 'bn' ? 'আপডেট করতে সমস্যা হয়েছে: ' + err.message : 'Error updating master counter: ' + err.message);
+                            
+                            setConfirmDialog({
+                              isOpen: true,
+                              title: language === 'bn' ? 'মাস্টার কাউন্টার পরিবর্তন নিশ্চিতকরণ' : 'Confirm Master Counter Update',
+                              message: language === 'bn' 
+                                ? `আপনি কি প্রধান চালান নম্বরটি পরিবর্তন করে ${val} করতে চান?` 
+                                : `Are you sure you want to set the Master Counter to ${val}?`,
+                              confirmText: language === 'bn' ? 'হ্যাঁ, সেট করুন' : 'Yes, Set',
+                              cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+                              isDanger: false,
+                              onConfirm: async () => {
+                                setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+                                try {
+                                  const docRef = doc(db, 'settings', 'master_counters');
+                                  await setDoc(docRef, {
+                                    currentChallanNo: val,
+                                    lastUpdated: Date.now(),
+                                    lastUpdatedBy: currentUserEmail || currentUser || 'Admin'
+                                  }, { merge: true });
+                                  alert(language === 'bn' ? 'মাস্টার চালান নাম্বারটি সফলভাবে আপডেট করা হয়েছে!' : 'Master counter successfully updated in Firestore!');
+                                  setAdminStartingChallanInput('');
+                                } catch (err: any) {
+                                  console.error("Error setting master counter: ", err);
+                                  alert(language === 'bn' ? 'আপডেট করতে সমস্যা হয়েছে: ' + err.message : 'Error updating master counter: ' + err.message);
+                                }
                               }
-                            }
+                            });
                           }}
                           className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black rounded uppercase tracking-wider transition-all"
                         >
