@@ -340,6 +340,8 @@ export default function App() {
   const [customEndDate, setCustomEndDate] = useState<string>('');
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [defaultChallan, setDefaultChallan] = useState<number>(601);
+  const [masterChallanNo, setMasterChallanNo] = useState<number | null>(null);
+  const [adminStartingChallanInput, setAdminStartingChallanInput] = useState<string>('');
   const [language, setLanguage] = useState<'bn' | 'en'>('bn');
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
@@ -541,6 +543,28 @@ export default function App() {
     return () => unsubscribe();
   }, [firebaseUser]);
 
+  // Subscribe to Master Counter (Challan No) in Firestore in real-time
+  useEffect(() => {
+    if (!firebaseUser) {
+      setMasterChallanNo(null);
+      return;
+    }
+
+    const docRef = doc(db, 'settings', 'master_counters');
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const val = docSnap.data().currentChallanNo;
+        setMasterChallanNo(val !== undefined ? val : null);
+      } else {
+        setMasterChallanNo(null);
+      }
+    }, (error) => {
+      console.error("Firestore master_counters sub error: ", error);
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser]);
+
   // Subscribe to cash transactions ledger in Firestore in real-time
   useEffect(() => {
     if (!firebaseUser) {
@@ -603,17 +627,20 @@ export default function App() {
   }, [notes]);
 
   const expectedNextChallan = useMemo(() => {
+    if (masterChallanNo !== null && masterChallanNo !== undefined) {
+      return masterChallanNo + 1;
+    }
     const active = calculations.filter(c => c.isDeleted !== true);
     if (active.length === 0) {
       return defaultChallan;
     }
     const latest = active[0];
     return (latest.challanNo !== undefined ? latest.challanNo : defaultChallan) + 1;
-  }, [calculations, defaultChallan]);
+  }, [masterChallanNo, calculations, defaultChallan]);
 
   // --- Handlers ---
 
-  const addCalculation = async (calc: Omit<Calculation, 'createdBy'>): Promise<boolean> => {
+  const addCalculation = async (calc: Omit<Calculation, 'createdBy'>): Promise<number | false> => {
     try {
       const newCalc = cleanUndefined({
         ...calc,
@@ -622,12 +649,19 @@ export default function App() {
       });
       
       const deductAmount = parseFloat(newCalc.totalPrice.toFixed(2));
+      let assignedChallanNo = expectedNextChallan;
       
       // Perform atomic transaction
       await runTransaction(db, async (transaction) => {
+        // READ 1: cashbox balance
         const cashboxDocRef = doc(db, 'settings', 'cashbox');
         const cashboxSnap = await transaction.get(cashboxDocRef);
         
+        // READ 2: master counters
+        const masterCounterDocRef = doc(db, 'settings', 'master_counters');
+        const masterCounterSnap = await transaction.get(masterCounterDocRef);
+        
+        // Computations
         let currentBalance = 0;
         if (cashboxSnap.exists()) {
           currentBalance = cashboxSnap.data().balance || 0;
@@ -639,6 +673,18 @@ export default function App() {
 
         const nextBalance = parseFloat((currentBalance - deductAmount).toFixed(2));
         
+        // Dynamically increment or initialize currentChallanNo
+        let assigned = expectedNextChallan;
+        if (masterCounterSnap.exists() && masterCounterSnap.data().currentChallanNo !== undefined) {
+          assigned = (masterCounterSnap.data().currentChallanNo || 0) + 1;
+        } else {
+          // If not initialized, fallback to current expected next
+          assigned = expectedNextChallan;
+        }
+        assignedChallanNo = assigned;
+
+        // NOW perform all writes safely:
+        
         // 1. Update the cashbox balance
         transaction.set(cashboxDocRef, {
           balance: nextBalance,
@@ -646,15 +692,23 @@ export default function App() {
           lastUpdatedBy: currentUserEmail || currentUser || 'Guest'
         }, { merge: true });
 
-        // 2. Add the calculation to Firestore
+        // 2. Update the master counter document
+        transaction.set(masterCounterDocRef, {
+          currentChallanNo: assignedChallanNo,
+          lastUpdated: Date.now(),
+          lastUpdatedBy: currentUserEmail || currentUser || 'Guest'
+        }, { merge: true });
+
+        // 3. Add the calculation to Firestore with the final atomic challanNo
         const newCalcId = calc.id || Math.random().toString(36).substr(2, 9);
         const calcDocRef = doc(collection(db, 'calculations'), newCalcId);
         transaction.set(calcDocRef, {
           ...newCalc,
-          id: newCalcId
+          id: newCalcId,
+          challanNo: assignedChallanNo
         });
 
-        // 3. Add to the cash ledger
+        // 4. Add to the cash ledger
         const ledgerId = Math.random().toString(36).substr(2, 9);
         const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
         transaction.set(ledgerDocRef, {
@@ -664,15 +718,15 @@ export default function App() {
           amount: deductAmount,
           balanceAfter: nextBalance,
           description: language === 'bn' 
-            ? `চালান নং #${newCalc.challanNo} তৈরি - অপারেটর: ${newCalc.createdByName}`
-            : `Challan #${newCalc.challanNo} Created - Operator: ${newCalc.createdByName}`,
-          challanNo: newCalc.challanNo,
+            ? `চালান নং #${assignedChallanNo} তৈরি - অপারেটর: ${newCalc.createdByName}`
+            : `Challan #${assignedChallanNo} Created - Operator: ${newCalc.createdByName}`,
+          challanNo: assignedChallanNo,
           operatorName: newCalc.createdByName,
           createdBy: currentUserEmail || currentUser || 'Guest'
         });
       });
 
-      return true;
+      return assignedChallanNo;
     } catch (err: any) {
       console.error("Error adding calculation document: ", err);
       if (err.message === "INSUFFICIENT_CASHBOX_BALANCE") {
@@ -1661,6 +1715,69 @@ export default function App() {
                       />
                     </div>
                   </div>
+
+                  {/* Centralized Master Counter Setting for Admin Only */}
+                  {userRole === 'admin' && (
+                    <div className="p-6 bg-indigo-50 dark:bg-indigo-950/20 rounded-lg border border-indigo-100 dark:border-indigo-900/30 max-w-xl space-y-4">
+                      <h3 className="text-sm font-black text-indigo-900 dark:text-indigo-400 uppercase tracking-wider mb-2">
+                         {language === 'bn' ? 'সেন্ট্রাল অটো-ইনক্রিমেন্ট চালান নাম্বার (শুধুমাত্র এডমিন)' : 'Centralized Master Counter Setup (Admin Only)'}
+                      </h3>
+                      <p className="text-xs text-indigo-700 dark:text-indigo-300 leading-relaxed">
+                        {language === 'bn' 
+                          ? 'ডাটাবেজের প্রধান সিরিয়াল কাউন্টারটি এখান থেকে শুরু বা পরিবর্তন করতে পারবেন। যেমন: ১০০০ বা ১০০০০ নির্ধারণ করলে পরবর্তী চালান সিরিয়াল ক্রমান্বয়ে বৃদ্ধি পাবে।' 
+                          : 'Set or bootstrap the centralized sequence counter in Firestore. New saves atomically increment this Master Challan.'}
+                      </p>
+                      
+                      <div className="bg-white dark:bg-slate-900 p-3 rounded-md border border-indigo-100 dark:border-indigo-950 flex items-center justify-between text-xs font-black">
+                        <span className="text-slate-500">{language === 'bn' ? 'ডাটাবেজে বর্তমান সর্বশেষ চালান নং:' : 'Current Master Counter in DB:'}</span>
+                        <span className="text-indigo-600 dark:text-indigo-400 text-sm">
+                          {masterChallanNo !== null ? `#${masterChallanNo}` : (language === 'bn' ? 'অনির্ধারিত' : 'Not Initialized')}
+                        </span>
+                      </div>
+
+                      <div className="flex gap-2 max-w-md items-end">
+                        <div className="flex-1">
+                          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                            {language === 'bn' ? 'নতুন মাস্টার চালান নং শুরু' : 'New Starting Master Challan'}
+                          </label>
+                          <input 
+                            type="number" 
+                            className="w-full px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-sm font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none"
+                            value={adminStartingChallanInput}
+                            placeholder={masterChallanNo !== null ? masterChallanNo.toString() : "e.g. 1000"}
+                            onChange={e => setAdminStartingChallanInput(e.target.value)}
+                          />
+                        </div>
+                        <button
+                          onClick={async () => {
+                            const val = parseInt(adminStartingChallanInput);
+                            if (isNaN(val) || val < 0) {
+                              alert(language === 'bn' ? 'অনুগ্রহ করে একটি সঠিক সংখ্যা দিন!' : 'Please enter a valid positive number!');
+                              return;
+                            }
+                            if (confirm(language === 'bn' ? `আপনি কি প্রধান চালান নম্বরটি পরিবর্তন করে ${val} করতে চান?` : `Are you sure you want to set the Master Counter to ${val}?`)) {
+                              try {
+                                const docRef = doc(db, 'settings', 'master_counters');
+                                await setDoc(docRef, {
+                                  currentChallanNo: val,
+                                  lastUpdated: Date.now(),
+                                  lastUpdatedBy: currentUserEmail || currentUser || 'Admin'
+                                }, { merge: true });
+                                alert(language === 'bn' ? 'মাস্টার চালান নাম্বারটি সফলভাবে আপডেট করা হয়েছে!' : 'Master counter successfully updated in Firestore!');
+                                setAdminStartingChallanInput('');
+                              } catch (err: any) {
+                                console.error("Error setting master counter: ", err);
+                                alert(language === 'bn' ? 'আপডেট করতে সমস্যা হয়েছে: ' + err.message : 'Error updating master counter: ' + err.message);
+                              }
+                            }
+                          }}
+                          className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black rounded uppercase tracking-wider transition-all"
+                        >
+                          {language === 'bn' ? 'সেট করুন' : 'Set Master'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="pt-4">
                     <button 
@@ -3049,7 +3166,7 @@ function CompactStatCard({ label, value, unit, bg, text = 'text-slate-800 dark:t
 // --- Calculator ---
 
 interface CalculatorProps {
-  onSave: (calc: Omit<Calculation, 'createdBy'>) => Promise<boolean>;
+  onSave: (calc: Omit<Calculation, 'createdBy'>) => Promise<number | false>;
   expectedNextChallan: number;
   language: 'bn' | 'en';
   t: any;
@@ -3267,7 +3384,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     }
 
     // Save to DB!
-    const success = await onSave({
+    const savedChallanNo = await onSave({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       sellerName: calculated.sellerName,
@@ -3279,11 +3396,16 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       challanNo: calculated.challanNo
     });
 
-    if (!success) {
+    if (savedChallanNo === false) {
       return; // Stop execution on failure
     }
 
-    setPreviewResult(calculated);
+    const finalizedResult = {
+      ...calculated,
+      challanNo: savedChallanNo
+    };
+
+    setPreviewResult(finalizedResult);
     setIsSaved(true);
 
     const successMsg = language === 'bn' 
@@ -3297,7 +3419,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       totalKg: '',
       ratePerMon: '',
       monType: formData.monType,
-      challanNo: (calculated.challanNo + 1).toString()
+      challanNo: (savedChallanNo + 1).toString()
     });
     setAllowSerialBypass(false);
   };
@@ -3418,7 +3540,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     }
 
     // Save to DB!
-    const success = await onSave({
+    const savedChallanNo = await onSave({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       sellerName: calculated.sellerName,
@@ -3434,11 +3556,16 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       targetMonPrice: calculated.targetMonPrice
     });
 
-    if (!success) {
+    if (savedChallanNo === false) {
       return; // Stop execution on failure
     }
 
-    setPreviewResult(calculated);
+    const finalizedResult = {
+      ...calculated,
+      challanNo: savedChallanNo
+    };
+
+    setPreviewResult(finalizedResult);
     setIsSaved(true);
 
     const successMsg = language === 'bn' 
@@ -3454,7 +3581,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       targetMonPrice: '',
       monType: minusFormData.monType,
       ratePerMon: '',
-      challanNo: (calculated.challanNo + 1).toString(),
+      challanNo: (savedChallanNo + 1).toString(),
       activeInput: 'weight'
     });
   };
@@ -3791,13 +3918,15 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.challanNum}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  {t.challanNum} {language === 'bn' ? '(স্বয়ংক্রিয়)' : '(Automated)'}
+                </label>
                 <input 
-                  type="number" 
-                  placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
-                  value={formData.challanNo}
-                  onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
+                  type="text" 
+                  className="w-full h-11 px-3 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 outline-none cursor-not-allowed opacity-80"
+                  value={formData.challanNo ? `#${formData.challanNo}` : '---'}
+                  disabled
+                  readOnly
                 />
               </div>
               <div className="md:col-span-3">
@@ -3919,14 +4048,14 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
-                    {language === 'bn' ? "চালান নং" : "Challan No"}
+                    {language === 'bn' ? "চালান নং (স্বয়ংক্রিয়)" : "Challan No (Automated)"}
                   </label>
                   <input 
-                    type="number" 
-                    placeholder="0"
-                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
-                    value={minusFormData.challanNo}
-                    onChange={e => setMinusFormData({ ...minusFormData, challanNo: e.target.value })}
+                    type="text" 
+                    className="w-full h-10 px-3 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 outline-none cursor-not-allowed opacity-80"
+                    value={minusFormData.challanNo ? `#${minusFormData.challanNo}` : '---'}
+                    disabled
+                    readOnly
                   />
                 </div>
               </div>
