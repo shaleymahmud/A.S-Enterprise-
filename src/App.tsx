@@ -709,6 +709,12 @@ export default function App() {
             
             const calcData = calcSnap.data() as Calculation;
             
+            // Read cashbox data BEFORE performing any writes!
+            const cashboxDocRef = doc(db, 'settings', 'cashbox');
+            const cashboxSnap = await transaction.get(cashboxDocRef);
+            
+            // NOW perform all writes safely:
+            
             // 1. Soft delete the calculation
             transaction.update(calcDocRef, {
               isDeleted: true,
@@ -719,8 +725,6 @@ export default function App() {
             // 2. If it wasn't already deleted, refund the amount
             if (!calcData.isDeleted) {
               const refundAmount = parseFloat((calcData.totalPrice || 0).toFixed(2));
-              const cashboxDocRef = doc(db, 'settings', 'cashbox');
-              const cashboxSnap = await transaction.get(cashboxDocRef);
               
               let currentBalance = 0;
               if (cashboxSnap.exists()) {
@@ -778,6 +782,12 @@ export default function App() {
         
         const calcData = calcSnap.data() as Calculation;
         
+        // Read cashbox data BEFORE performing any writes!
+        const cashboxDocRef = doc(db, 'settings', 'cashbox');
+        const cashboxSnap = await transaction.get(cashboxDocRef);
+        
+        // NOW perform all writes safely:
+        
         // 1. Restore the calculation
         transaction.update(calcDocRef, {
           isDeleted: false,
@@ -788,8 +798,6 @@ export default function App() {
         // 2. If it was indeed deleted, deduct the amount again
         if (calcData.isDeleted) {
           const deductAmount = parseFloat((calcData.totalPrice || 0).toFixed(2));
-          const cashboxDocRef = doc(db, 'settings', 'cashbox');
-          const cashboxSnap = await transaction.get(cashboxDocRef);
           
           let currentBalance = 0;
           if (cashboxSnap.exists()) {
