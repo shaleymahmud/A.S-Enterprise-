@@ -49,7 +49,8 @@ import {
   updateDoc, 
   query, 
   orderBy, 
-  onSnapshot 
+  onSnapshot,
+  runTransaction
 } from 'firebase/firestore';
 
 // Helper to strip undefined values so Firestore doesn't crash on saving/updating
@@ -342,6 +343,8 @@ export default function App() {
   const [language, setLanguage] = useState<'bn' | 'en'>('bn');
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
+  const [cashBoxBalance, setCashBoxBalance] = useState<number>(0);
+  const [cashLedger, setCashLedger] = useState<any[]>([]);
 
   // Firebase Authentication & Role state
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
@@ -517,6 +520,48 @@ export default function App() {
     return () => unsubscribe();
   }, [firebaseUser, userRole]);
 
+  // Subscribe to Cash Box balance in Firestore in real-time
+  useEffect(() => {
+    if (!firebaseUser) {
+      setCashBoxBalance(0);
+      return;
+    }
+
+    const docRef = doc(db, 'settings', 'cashbox');
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setCashBoxBalance(docSnap.data().balance || 0);
+      } else {
+        setCashBoxBalance(0);
+      }
+    }, (error) => {
+      console.error("Firestore cashbox sub error: ", error);
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser]);
+
+  // Subscribe to cash transactions ledger in Firestore in real-time
+  useEffect(() => {
+    if (!firebaseUser) {
+      setCashLedger([]);
+      return;
+    }
+
+    const q = query(collection(db, 'cash_ledger'), orderBy('timestamp', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list: any[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ ...docSnap.data(), id: docSnap.id });
+      });
+      setCashLedger(list);
+    }, (error) => {
+      console.error("Firestore cash_ledger sub error: ", error);
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser]);
+
   // Load Persisted Data
   useEffect(() => {
     const savedNotes = localStorage.getItem('as_enterprise_notes');
@@ -576,12 +621,67 @@ export default function App() {
         createdByName: currentUser || 'Operator'
       });
       
-      // Save directly to Firestore calculations collection
-      await addDoc(collection(db, 'calculations'), newCalc);
+      const deductAmount = parseFloat(newCalc.totalPrice.toFixed(2));
+      
+      // Perform atomic transaction
+      await runTransaction(db, async (transaction) => {
+        const cashboxDocRef = doc(db, 'settings', 'cashbox');
+        const cashboxSnap = await transaction.get(cashboxDocRef);
+        
+        let currentBalance = 0;
+        if (cashboxSnap.exists()) {
+          currentBalance = cashboxSnap.data().balance || 0;
+        }
+
+        if (deductAmount > currentBalance) {
+          throw new Error("INSUFFICIENT_CASHBOX_BALANCE");
+        }
+
+        const nextBalance = parseFloat((currentBalance - deductAmount).toFixed(2));
+        
+        // 1. Update the cashbox balance
+        transaction.set(cashboxDocRef, {
+          balance: nextBalance,
+          lastUpdated: Date.now(),
+          lastUpdatedBy: currentUserEmail || currentUser || 'Guest'
+        }, { merge: true });
+
+        // 2. Add the calculation to Firestore
+        const newCalcId = calc.id || Math.random().toString(36).substr(2, 9);
+        const calcDocRef = doc(collection(db, 'calculations'), newCalcId);
+        transaction.set(calcDocRef, {
+          ...newCalc,
+          id: newCalcId
+        });
+
+        // 3. Add to the cash ledger
+        const ledgerId = Math.random().toString(36).substr(2, 9);
+        const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
+        transaction.set(ledgerDocRef, {
+          id: ledgerId,
+          timestamp: Date.now(),
+          type: 'debit',
+          amount: deductAmount,
+          balanceAfter: nextBalance,
+          description: language === 'bn' 
+            ? `চালান নং #${newCalc.challanNo} তৈরি - অপারেটর: ${newCalc.createdByName}`
+            : `Challan #${newCalc.challanNo} Created - Operator: ${newCalc.createdByName}`,
+          challanNo: newCalc.challanNo,
+          operatorName: newCalc.createdByName,
+          createdBy: currentUserEmail || currentUser || 'Guest'
+        });
+      });
+
       return true;
     } catch (err: any) {
       console.error("Error adding calculation document: ", err);
-      alert(language === 'bn' ? 'ডাটাবেজে সেভ করতে ত্রুটি হয়েছে!' : 'Error saving to database: ' + err.message);
+      if (err.message === "INSUFFICIENT_CASHBOX_BALANCE") {
+        alert(language === 'bn' 
+          ? 'সীমাবদ্ধ ক্যাশ ব্যালেন্স! হিসাবটি সেভ করা ব্লক করা হয়েছে। অনুগ্রহ করে এডমিনকে ক্যাশ বক্স রিফিল করতে বলুন।' 
+          : 'Insufficient Cash Balance! Entry blocked. Ask Admin to refill the Cash Box.');
+      } else {
+        alert(language === 'bn' ? 'ডাটাবেজে সেভ করতে ত্রুটি হয়েছে!' : 'Error saving to database: ' + err.message);
+      }
       return false;
     }
   };
@@ -597,10 +697,61 @@ export default function App() {
       onConfirm: async () => {
         try {
           const deletedByVal = currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest');
-          await updateDoc(doc(db, 'calculations', id), {
-            isDeleted: true,
-            deletedBy: deletedByVal,
-            deletedAt: Date.now()
+          const deletedByNameVal = currentUser || 'Operator';
+          
+          await runTransaction(db, async (transaction) => {
+            const calcDocRef = doc(db, 'calculations', id);
+            const calcSnap = await transaction.get(calcDocRef);
+            
+            if (!calcSnap.exists()) {
+              throw new Error("CALCULATION_NOT_FOUND");
+            }
+            
+            const calcData = calcSnap.data() as Calculation;
+            
+            // 1. Soft delete the calculation
+            transaction.update(calcDocRef, {
+              isDeleted: true,
+              deletedBy: deletedByVal,
+              deletedAt: Date.now()
+            });
+
+            // 2. If it wasn't already deleted, refund the amount
+            if (!calcData.isDeleted) {
+              const refundAmount = parseFloat((calcData.totalPrice || 0).toFixed(2));
+              const cashboxDocRef = doc(db, 'settings', 'cashbox');
+              const cashboxSnap = await transaction.get(cashboxDocRef);
+              
+              let currentBalance = 0;
+              if (cashboxSnap.exists()) {
+                currentBalance = cashboxSnap.data().balance || 0;
+              }
+              
+              const nextBalance = parseFloat((currentBalance + refundAmount).toFixed(2));
+              
+              transaction.set(cashboxDocRef, {
+                balance: nextBalance,
+                lastUpdated: Date.now(),
+                lastUpdatedBy: deletedByVal
+              }, { merge: true });
+
+              // 3. Add log in the ledger
+              const ledgerId = Math.random().toString(36).substr(2, 9);
+              const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
+              transaction.set(ledgerDocRef, {
+                id: ledgerId,
+                timestamp: Date.now(),
+                type: 'credit',
+                amount: refundAmount,
+                balanceAfter: nextBalance,
+                description: language === 'bn'
+                  ? `চালান নং #${calcData.challanNo} ডিলিট (রিফান্ড) - ডিলিট করেছেন: ${deletedByNameVal}`
+                  : `Challan #${calcData.challanNo} Deleted (Refunded) - Deleted by: ${deletedByNameVal}`,
+                challanNo: calcData.challanNo,
+                operatorName: deletedByNameVal,
+                createdBy: deletedByVal
+              });
+            }
           });
           setConfirmDialog(prev => ({ ...prev, isOpen: false }));
         } catch (err: any) {
@@ -614,14 +765,76 @@ export default function App() {
 
   const restoreCalculation = async (id: string) => {
     try {
-      await updateDoc(doc(db, 'calculations', id), {
-        isDeleted: false,
-        deletedBy: null,
-        deletedAt: null
+      const restoredByVal = currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest');
+      const restoredByNameVal = currentUser || 'Operator';
+
+      await runTransaction(db, async (transaction) => {
+        const calcDocRef = doc(db, 'calculations', id);
+        const calcSnap = await transaction.get(calcDocRef);
+        
+        if (!calcSnap.exists()) {
+          throw new Error("CALCULATION_NOT_FOUND");
+        }
+        
+        const calcData = calcSnap.data() as Calculation;
+        
+        // 1. Restore the calculation
+        transaction.update(calcDocRef, {
+          isDeleted: false,
+          deletedBy: null,
+          deletedAt: null
+        });
+
+        // 2. If it was indeed deleted, deduct the amount again
+        if (calcData.isDeleted) {
+          const deductAmount = parseFloat((calcData.totalPrice || 0).toFixed(2));
+          const cashboxDocRef = doc(db, 'settings', 'cashbox');
+          const cashboxSnap = await transaction.get(cashboxDocRef);
+          
+          let currentBalance = 0;
+          if (cashboxSnap.exists()) {
+            currentBalance = cashboxSnap.data().balance || 0;
+          }
+
+          if (deductAmount > currentBalance) {
+            throw new Error("INSUFFICIENT_CASHBOX_BALANCE");
+          }
+          
+          const nextBalance = parseFloat((currentBalance - deductAmount).toFixed(2));
+          
+          transaction.set(cashboxDocRef, {
+            balance: nextBalance,
+            lastUpdated: Date.now(),
+            lastUpdatedBy: restoredByVal
+          }, { merge: true });
+
+          // 3. Add log in the ledger
+          const ledgerId = Math.random().toString(36).substr(2, 9);
+          const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
+          transaction.set(ledgerDocRef, {
+            id: ledgerId,
+            timestamp: Date.now(),
+            type: 'debit',
+            amount: deductAmount,
+            balanceAfter: nextBalance,
+            description: language === 'bn'
+              ? `চালান নং #${calcData.challanNo} পুনরুদ্ধার (পুনরায় কাটা হল) - অপারেটর: ${restoredByNameVal}`
+              : `Challan #${calcData.challanNo} Restored (Re-deducted) - Operator: ${restoredByNameVal}`,
+            challanNo: calcData.challanNo,
+            operatorName: restoredByNameVal,
+            createdBy: restoredByVal
+          });
+        }
       });
     } catch (err: any) {
       console.error("Error restoring doc: ", err);
-      alert(language === 'bn' ? 'রেকর্ডটি পুনরুদ্ধার করতে সমস্যা হয়েছে!' : 'Error restoring record: ' + err.message);
+      if (err.message === "INSUFFICIENT_CASHBOX_BALANCE") {
+        alert(language === 'bn' 
+          ? 'সীমাবদ্ধ ক্যাশ ব্যালেন্স! রেকর্ডটি পুনরুদ্ধার করা ব্লক করা হয়েছে।' 
+          : 'Insufficient Cash Balance! Restoring this record was blocked due to low cash box.');
+      } else {
+        alert(language === 'bn' ? 'রেকর্ডটি পুনরুদ্ধার করতে সমস্যা হয়েছে!' : 'Error restoring record: ' + err.message);
+      }
     }
   };
 
@@ -637,6 +850,7 @@ export default function App() {
         try {
           await deleteDoc(doc(db, 'calculations', id));
           setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          alert(language === 'bn' ? 'হিসাবটি সফলভাবে চিরতরে ডিলিট করা হয়েছে!' : 'Record permanently deleted successfully!');
         } catch (err: any) {
           console.error("Error permanently deleting doc: ", err);
           alert(language === 'bn' ? 'চিরতরে ডিলিট করতে সমস্যা হয়েছে!' : 'Error permanently deleting record: ' + err.message);
@@ -644,6 +858,52 @@ export default function App() {
         }
       }
     });
+  };
+
+  const topUpCashBox = async (amount: number): Promise<boolean> => {
+    try {
+      const topUpByVal = currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest');
+      const topUpByNameVal = currentUser || 'Admin';
+
+      await runTransaction(db, async (transaction) => {
+        const cashboxDocRef = doc(db, 'settings', 'cashbox');
+        const cashboxSnap = await transaction.get(cashboxDocRef);
+        
+        let currentBalance = 0;
+        if (cashboxSnap.exists()) {
+          currentBalance = cashboxSnap.data().balance || 0;
+        }
+        
+        const nextBalance = parseFloat((currentBalance + amount).toFixed(2));
+        
+        transaction.set(cashboxDocRef, {
+          balance: nextBalance,
+          lastUpdated: Date.now(),
+          lastUpdatedBy: topUpByVal
+        }, { merge: true });
+
+        // Add credit log in the ledger
+        const ledgerId = Math.random().toString(36).substr(2, 9);
+        const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
+        transaction.set(ledgerDocRef, {
+          id: ledgerId,
+          timestamp: Date.now(),
+          type: 'credit',
+          amount: amount,
+          balanceAfter: nextBalance,
+          description: language === 'bn'
+            ? `এডমিন কর্তৃক ব্যালেন্স রিফিল (${amount.toLocaleString()} TK)`
+            : `Balance Refilled by Admin (${amount.toLocaleString()} TK)`,
+          createdBy: topUpByVal,
+          operatorName: topUpByNameVal
+        });
+      });
+      return true;
+    } catch (err: any) {
+      console.error("Error topping up cash box: ", err);
+      alert(language === 'bn' ? 'ব্যালেন্স টপ-আপ করতে সমস্যা হয়েছে!' : 'Error topping up cash box: ' + err.message);
+      return false;
+    }
   };
 
   const editCalculation = async (updated: Calculation) => {
@@ -1149,6 +1409,9 @@ export default function App() {
                 userRole={userRole}
                 totalExpenses={totalExpenses}
                 handleExportCSV={handleExportCSV}
+                cashBoxBalance={cashBoxBalance}
+                cashLedger={cashLedger}
+                onTopUp={topUpCashBox}
               />
             </motion.div>
           )}
@@ -1162,6 +1425,7 @@ export default function App() {
                 calculations={calculations}
                 receiptVisibility={receiptVisibility}
                 copyConfig={copyConfig}
+                cashBoxBalance={cashBoxBalance}
               />
             </motion.div>
           )}
@@ -1565,6 +1829,9 @@ interface HomeSectionProps {
   userRole: 'admin' | 'guest' | null;
   totalExpenses: number;
   handleExportCSV: () => void;
+  cashBoxBalance: number;
+  cashLedger: any[];
+  onTopUp: (amount: number) => Promise<boolean>;
 }
 
 function HomeSection({ 
@@ -1587,9 +1854,12 @@ function HomeSection({
   onPermanentDelete,
   userRole,
   totalExpenses,
-  handleExportCSV
+  handleExportCSV,
+  cashBoxBalance,
+  cashLedger = [],
+  onTopUp
 }: HomeSectionProps) {
-  const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash'>('active');
+  const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
   const [memoCalc, setMemoCalc] = useState<Calculation | null>(null);
@@ -1816,24 +2086,36 @@ function HomeSection({
                 </span>
               )}
             </button>
+            <button
+              onClick={() => setActiveSubTab('cashLedger')}
+              className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeSubTab === 'cashLedger'
+                  ? 'bg-slate-900 text-yellow-400 shadow-sm border border-slate-850 dark:bg-slate-950 dark:text-yellow-400'
+                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <span>💵 {language === 'bn' ? 'ক্যাশ লেজার (অডিট)' : 'Cash Ledger (Audit)'}</span>
+            </button>
           </div>
 
-          <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <div>
-              <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
-                {activeSubTab === 'active' 
-                  ? (language === 'bn' ? "দৈনিক চালান বিবরণ খাতা" : "Daily Calculations Table")
-                  : (language === 'bn' ? "ট্র্যাশ বিন (মুছে ফেলা হিসাবসমূহ)" : "Trash Bin (Deleted Calculations)")}
-              </h3>
-              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
-                {activeSubTab === 'active' 
-                  ? `${filteredList.length} ${language === 'bn' ? 'টি রেকর্ড খুঁজে পাওয়া গেছে' : 'records found matching criteria'}`
-                  : `${filteredDeletedList.length} ${language === 'bn' ? 'টি মুছে ফেলা রেকর্ড পাওয়া গেছে' : 'deleted records found'}`
-                }
-              </p>
-            </div>
+          {activeSubTab !== 'cashLedger' ? (
+            <>
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
+                    {activeSubTab === 'active' 
+                      ? (language === 'bn' ? "দৈনিক চালান বিবরণ খাতা" : "Daily Calculations Table")
+                      : (language === 'bn' ? "ট্র্যাশ বিন (মুছে ফেলা হিসাবসমূহ)" : "Trash Bin (Deleted Calculations)")}
+                  </h3>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
+                    {activeSubTab === 'active' 
+                      ? `${filteredList.length} ${language === 'bn' ? 'টি রেকর্ড খুঁজে পাওয়া গেছে' : 'records found matching criteria'}`
+                      : `${filteredDeletedList.length} ${language === 'bn' ? 'টি মুছে ফেলা রেকর্ড পাওয়া গেছে' : 'deleted records found'}`
+                    }
+                  </p>
+                </div>
 
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
               {/* Quick Search Bar */}
               <div className="relative flex items-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 h-8">
                 <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 mr-2 shrink-0" />
@@ -2206,6 +2488,151 @@ function HomeSection({
                 </table>
               </div>
             </>
+          )}
+        </>
+      ) : (
+        <div className="p-6 space-y-6">
+              {/* Cash Box Controls Card */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-100 dark:border-slate-800">
+                <div className="lg:col-span-5 space-y-2">
+                  <h4 className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                    {language === 'bn' ? 'সেন্ট্রাল ক্যাশ বক্স বিবরণ' : 'CENTRAL CASH BOX OVERVIEW'}
+                  </h4>
+                  <div className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">
+                    ৳{cashBoxBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase">
+                    {language === 'bn' ? 'রিয়েল-টাইম অটোমেটেড ক্যাশ বুক ব্যালেন্স' : 'Real-time automated cash book balance'}
+                  </p>
+                </div>
+
+                <div className="lg:col-span-7 bg-white dark:bg-slate-900 p-4 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-end gap-3">
+                  <div className="flex-1">
+                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1.5 block">
+                      {language === 'bn' ? 'ক্যাশ বক্স রিফিল / টাকা যোগ করুন (টাকা)' : 'REFILL CASH BOX / ADD FUNDS (TK)'}
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-400">৳</span>
+                      <input
+                        type="number"
+                        placeholder="e.g. 20000"
+                        className="w-full h-10 pl-7 pr-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                        id="top-up-amount-input"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const inputEl = document.getElementById('top-up-amount-input') as HTMLInputElement;
+                      const amount = parseFloat(inputEl?.value || '0');
+                      if (isNaN(amount) || amount <= 0) {
+                        alert(language === 'bn' ? 'অনুগ্রহ করে সঠিক টাকার পরিমাণ লিখুন!' : 'Please enter a valid positive amount!');
+                        return;
+                      }
+                      const success = await onTopUp(amount);
+                      if (success) {
+                        if (inputEl) inputEl.value = '';
+                        alert(language === 'bn' ? 'সফলভাবে ক্যাশ বক্সে টাকা যোগ করা হয়েছে!' : 'Successfully added funds to Cash Box!');
+                      }
+                    }}
+                    className="h-10 px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded text-xs uppercase tracking-wider transition-all shadow-sm active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Plus size={14} />
+                    <span>{language === 'bn' ? 'ফান্ড রিফিল করুন' : 'Add Funds / Top-Up'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Transaction Ledger Table */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
+                  {language === 'bn' ? "ক্যাশ লেনদেন অডিট খাতা" : "CASH TRANSACTION AUDIT LEDGER"}
+                </h3>
+                
+                {cashLedger.length === 0 ? (
+                  <div className="text-center py-12 text-slate-300 font-bold uppercase text-[10px]">
+                    {language === 'bn' ? 'কোনো লেনদেন রেকর্ড পাওয়া যায়নি!' : 'No transactions recorded yet!'}
+                  </div>
+                ) : (
+                  <div className="border border-slate-100 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900">
+                    {/* Mobile Ledger List View */}
+                    <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800">
+                      {cashLedger.map((entry) => (
+                        <div key={entry.id} className="p-4 space-y-2 hover:bg-slate-50/50">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] font-bold text-slate-400">
+                              {new Date(entry.timestamp).toLocaleString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                            </span>
+                            <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
+                              entry.type === 'credit'
+                                ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600'
+                                : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600'
+                            }`}>
+                              {entry.type === 'credit' ? (language === 'bn' ? 'ক্রেডিট (+)' : 'CREDIT (+)') : (language === 'bn' ? 'ডেবিট (-)' : 'DEBIT (-)')}
+                            </span>
+                          </div>
+                          <div className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                            {entry.description}
+                          </div>
+                          <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500">
+                            <span>Amount: <strong className={entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'}>৳{entry.amount.toFixed(2)}</strong></span>
+                            <span>Balance After: <strong className="text-slate-700 dark:text-slate-300">৳{entry.balanceAfter.toFixed(2)}</strong></span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Desktop Ledger Table View */}
+                    <div className="hidden md:block overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-slate-50 dark:bg-slate-950 text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">
+                            <th className="px-4 py-3">Date & Time</th>
+                            <th className="px-4 py-3">Type</th>
+                            <th className="px-4 py-3 text-right">Amount</th>
+                            <th className="px-4 py-3 text-right">Balance After</th>
+                            <th className="px-4 py-3">Description</th>
+                            <th className="px-4 py-3">Initiated By</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {cashLedger.map((entry) => (
+                            <tr key={entry.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
+                              <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
+                                {new Date(entry.timestamp).toLocaleString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
+                                  entry.type === 'credit'
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600'
+                                    : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600'
+                                }`}>
+                                  {entry.type === 'credit' ? (language === 'bn' ? 'ক্রেডিট (+)' : 'CREDIT (+)') : (language === 'bn' ? 'ডেবিট (-)' : 'DEBIT (-)')}
+                                </span>
+                              </td>
+                              <td className={`px-4 py-3 font-black text-right whitespace-nowrap ${
+                                entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'
+                              }`}>
+                                {entry.type === 'credit' ? '+' : '-'}৳{entry.amount.toFixed(2)}
+                              </td>
+                              <td className="px-4 py-3 font-black text-slate-700 dark:text-slate-300 text-right whitespace-nowrap">
+                                ৳{entry.balanceAfter.toFixed(2)}
+                              </td>
+                              <td className="px-4 py-3 font-bold text-slate-800 dark:text-slate-200">
+                                {entry.description}
+                              </td>
+                              <td className="px-4 py-3 font-medium text-slate-500 whitespace-nowrap">
+                                {entry.createdBy}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -2621,9 +3048,10 @@ interface CalculatorProps {
   calculations: Calculation[];
   receiptVisibility: ReceiptVisibility;
   copyConfig: CopyConfig;
+  cashBoxBalance: number;
 }
 
-function CalculatorSection({ onSave, expectedNextChallan, language, t, calculations, receiptVisibility, copyConfig }: CalculatorProps) {
+function CalculatorSection({ onSave, expectedNextChallan, language, t, calculations, receiptVisibility, copyConfig, cashBoxBalance }: CalculatorProps) {
   const [formData, setFormData] = useState({
     sellerName: '',
     totalKg: '',
@@ -2802,6 +3230,16 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       ratePerMon: parseFloat(formData.ratePerMon)
     };
 
+    // Hard Blocker: Insufficient central cashbox balance
+    const roundedPrice = Math.round(calculated.price);
+    if (roundedPrice > cashBoxBalance) {
+      const errMsg = language === 'bn'
+        ? `Error (পর্যাপ্ত ক্যাশ নেই): সেন্ট্রাল ক্যাশ বক্সে পর্যাপ্ত টাকা নেই! হিসাবের মূল্য: ৳${roundedPrice.toLocaleString()}, ক্যাশ ব্যালেন্স: ৳${cashBoxBalance.toLocaleString()}। দয়া করে অ্যাডমিনকে ক্যাশ বক্স রিফিল করতে বলুন।`
+        : `Hard Blocker: Insufficient Central Cash Box balance! Payable: ৳${roundedPrice.toLocaleString()}, Cash Box Balance: ৳${cashBoxBalance.toLocaleString()}. Please ask Admin to Top-Up.`;
+      alert(errMsg);
+      return;
+    }
+
     // Check duplicate saved today
     const startOfDay = new Date().setHours(0, 0, 0, 0);
     const isDuplicate = calculations.some(c => 
@@ -2960,6 +3398,16 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       isMinusCalculated: true,
       targetMonPrice: minusFormData.activeInput === 'targetPrice' ? parseFloat(minusFormData.targetMonPrice) : undefined
     };
+
+    // Hard Blocker: Insufficient central cashbox balance
+    const roundedPrice = Math.round(calculated.price);
+    if (roundedPrice > cashBoxBalance) {
+      const errMsg = language === 'bn'
+        ? `Error (পর্যাপ্ত ক্যাশ নেই): সেন্ট্রাল ক্যাশ বক্সে পর্যাপ্ত টাকা নেই! হিসাবের মূল্য: ৳${roundedPrice.toLocaleString()}, ক্যাশ ব্যালেন্স: ৳${cashBoxBalance.toLocaleString()}। দয়া করে অ্যাডমিনকে ক্যাশ বক্স রিফিল করতে বলুন।`
+        : `Hard Blocker: Insufficient Central Cash Box balance! Payable: ৳${roundedPrice.toLocaleString()}, Cash Box Balance: ৳${cashBoxBalance.toLocaleString()}. Please ask Admin to Top-Up.`;
+      alert(errMsg);
+      return;
+    }
 
     // Save to DB!
     const success = await onSave({
@@ -3284,6 +3732,30 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
           >
             <span>{isMinusMode ? "✕ [সাধারণ হিসাব]" : "⚖ [মাইনস ক্যালকুলেট]"}</span>
           </button>
+        </div>
+
+        {/* Real-time Cash Box Balance Widget */}
+        <div className="mb-6 p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-all bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800">
+          <div className="space-y-1">
+            <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 block">
+              {language === 'bn' ? 'চলতি ক্যাশ ব্যালেন্স (রিয়েল-টাইম)' : 'CURRENT AVAILABLE CASH BALANCE (REAL-TIME)'}
+            </span>
+            <div className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <span className="text-yellow-500">💵</span>
+              <span>৳{cashBoxBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+
+          {cashBoxBalance < 2000 && (
+            <div className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 px-3.5 py-2 rounded-lg text-xs font-black uppercase tracking-wide flex items-center gap-2 animate-pulse">
+              <span>⚠️</span>
+              <span>
+                {language === 'bn' 
+                  ? 'ক্যাশ বক্স ব্যালেন্স কম: দয়া করে অ্যাডমিনকে রিফিল করতে বলুন!' 
+                  : 'Low Balance: Please ask Admin to Top-Up!'}
+              </span>
+            </div>
+          )}
         </div>
         
         {!isMinusMode ? (

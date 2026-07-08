@@ -1,0 +1,106 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User account information and roles",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "guest"] }
+      },
+      "required": ["uid", "email"]
+    },
+    "Calculation": {
+      "title": "Calculation Entry",
+      "description": "Gate entry and firewood mon calculation logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "sellerName": { "type": "string" },
+        "totalKg": { "type": "number" },
+        "monType": { "type": "number", "enum": [40, 41, 42, 43] },
+        "ratePerMon": { "type": "number" },
+        "totalMon": { "type": "number" },
+        "totalPrice": { "type": "number" },
+        "challanNo": { "type": "number" },
+        "createdBy": { "type": "string" },
+        "deductedWeight": { "type": "number" },
+        "deductionPercentage": { "type": "number" },
+        "isMinusCalculated": { "type": "boolean" },
+        "targetMonPrice": { "type": "number" },
+        "getEntryNo": { "type": "number" },
+        "isDeleted": { "type": "boolean" },
+        "deletedBy": { "type": "string" },
+        "deletedAt": { "type": "number" }
+      },
+      "required": ["id", "timestamp", "sellerName", "totalKg", "monType", "ratePerMon", "totalMon", "totalPrice", "challanNo"]
+    },
+    "Expense": {
+      "title": "Depot Expense",
+      "description": "Operating expenses for the depot",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "amount": { "type": "number" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "amount", "category", "createdBy"]
+    },
+    "CashboxSettings": {
+      "title": "Cash Box Settings",
+      "description": "Global settings for the central cash box",
+      "type": "object",
+      "properties": {
+        "balance": { "type": "number" },
+        "lastUpdated": { "type": "number" },
+        "lastUpdatedBy": { "type": "string" }
+      },
+      "required": ["balance"]
+    },
+    "CashLedgerEntry": {
+      "title": "Cash Ledger Entry",
+      "description": "Transaction logs of credits and debits from the Cash Box",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "type": { "type": "string", "enum": ["credit", "debit"] },
+        "amount": { "type": "number" },
+        "balanceAfter": { "type": "number" },
+        "description": { "type": "string" },
+        "challanNo": { "type": "number" },
+        "operatorName": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "type", "amount", "balanceAfter", "description", "createdBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Stores user profiles and authorization roles"
+    },
+    "/calculations/{calcId}": {
+      "schema": "Calculation",
+      "description": "Stores firewood mon calculation invoice documents"
+    },
+    "/expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Stores operating expense logs"
+    },
+    "/settings/cashbox": {
+      "schema": "CashboxSettings",
+      "description": "Stores the central cashbox global balance doc"
+    },
+    "/cash_ledger/{ledgerId}": {
+      "schema": "CashLedgerEntry",
+      "description": "Stores audit logs of credit/debit cash operations"
+    }
+  }
+}
