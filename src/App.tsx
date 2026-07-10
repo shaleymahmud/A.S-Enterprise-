@@ -629,14 +629,18 @@ export default function App() {
 
   const expectedNextChallan = useMemo(() => {
     if (masterChallanNo !== null && masterChallanNo !== undefined) {
-      return masterChallanNo + 1;
+      const parsed = parseInt(masterChallanNo as any);
+      if (!isNaN(parsed)) {
+        return parsed + 1;
+      }
     }
     const active = calculations.filter(c => c.isDeleted !== true);
     if (active.length === 0) {
       return defaultChallan;
     }
     const latest = active[0];
-    return (latest.challanNo !== undefined ? latest.challanNo : defaultChallan) + 1;
+    const latestChallanNum = latest.challanNo !== undefined ? parseInt(latest.challanNo as any) : NaN;
+    return (!isNaN(latestChallanNum) ? latestChallanNum : defaultChallan) + 1;
   }, [masterChallanNo, calculations, defaultChallan]);
 
   // --- Handlers ---
@@ -3775,8 +3779,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     return { monCount, extraKg, totalMonDecimal, price };
   }, [formData]);
 
-  const enteredChallanNum = parseInt(formData.challanNo) || 0;
-  const showChallanWarning = formData.challanNo !== '' && enteredChallanNum !== expectedNextChallan;
+  const enteredChallanNum = isMinusMode ? (parseInt(minusFormData.challanNo) || 0) : (parseInt(formData.challanNo) || 0);
+  const showChallanWarning = (isMinusMode ? minusFormData.challanNo : formData.challanNo) !== '' && enteredChallanNum !== expectedNextChallan;
 
   // On Calculate (হিসাব করুন): Computes the preview representation of the firewood invoice but does NOT save yet.
   const handleCalculate = () => {
@@ -3988,6 +3992,14 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       return;
     }
 
+    if (showChallanWarning && !allowSerialBypass) {
+      const errText = language === 'bn' 
+        ? `Error (চালান ভুল): চালান নম্বরটি ক্রমিক অনুসারী নয়। সম্ভাব্য নম্বর: ${expectedNextChallan}। আপনি যদি এই নম্বরেই সাবমিট করতে চান তবে বিশেষ চেক-বক্সটি টিক করুন।`
+        : `Challan Warning: The entered number is out-of-sequence. Correct sequential suggestion: ${expectedNextChallan}. If you intentionally want to bypass, tick the check-box to calculate.`;
+      alert(errText);
+      return;
+    }
+
     const enteredChallanNum = parseInt(minusFormData.challanNo) || 0;
     const startOfDay = new Date().setHours(0, 0, 0, 0);
     const isDuplicate = calculations.some(c => 
@@ -4068,6 +4080,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
         challanNo: (savedChallanNo + 1).toString(),
         activeInput: 'weight'
       });
+      setAllowSerialBypass(false);
     };
 
     if (isDuplicate && setConfirmDialog) {
