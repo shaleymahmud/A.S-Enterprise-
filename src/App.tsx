@@ -768,9 +768,12 @@ export default function App() {
             
             const calcData = calcSnap.data() as Calculation;
             
-            // Read cashbox data BEFORE performing any writes!
+            // Read cashbox and master counter data BEFORE performing any writes!
             const cashboxDocRef = doc(db, 'settings', 'cashbox');
             const cashboxSnap = await transaction.get(cashboxDocRef);
+
+            const masterCounterDocRef = doc(db, 'settings', 'master_counters');
+            const masterCounterSnap = await transaction.get(masterCounterDocRef);
             
             // NOW perform all writes safely:
             
@@ -816,8 +819,6 @@ export default function App() {
               });
 
               // 4. Update the master counter if we deleted the absolute latest one
-              const masterCounterDocRef = doc(db, 'settings', 'master_counters');
-              const masterCounterSnap = await transaction.get(masterCounterDocRef);
               if (masterCounterSnap.exists() && masterCounterSnap.data().currentChallanNo === calcData.challanNo) {
                 const prevChallanNo = Math.max(0, calcData.challanNo - 1);
                 transaction.update(masterCounterDocRef, {
