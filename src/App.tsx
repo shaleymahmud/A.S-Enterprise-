@@ -810,6 +810,18 @@ export default function App() {
                 operatorName: deletedByNameVal,
                 createdBy: deletedByVal
               });
+
+              // 4. Update the master counter if we deleted the absolute latest one
+              const masterCounterDocRef = doc(db, 'settings', 'master_counters');
+              const masterCounterSnap = await transaction.get(masterCounterDocRef);
+              if (masterCounterSnap.exists() && masterCounterSnap.data().currentChallanNo === calcData.challanNo) {
+                const prevChallanNo = Math.max(0, calcData.challanNo - 1);
+                transaction.update(masterCounterDocRef, {
+                  currentChallanNo: prevChallanNo,
+                  lastUpdated: Date.now(),
+                  lastUpdatedBy: deletedByVal
+                });
+              }
             }
           });
           setConfirmDialog(prev => ({ ...prev, isOpen: false }));
@@ -1949,31 +1961,39 @@ export default function App() {
                           : 'Set or bootstrap the centralized sequence counter in Firestore. New saves atomically increment this Master Challan.'}
                       </p>
                       
-                      <div className="bg-white dark:bg-slate-900 p-3 rounded-md border border-indigo-100 dark:border-indigo-950 flex items-center justify-between text-xs font-black">
-                        <span className="text-slate-500">{language === 'bn' ? 'ডাটাবেজে বর্তমান সর্বশেষ চালান নং:' : 'Current Master Counter in DB:'}</span>
-                        <span className="text-indigo-600 dark:text-indigo-400 text-sm">
-                          {masterChallanNo !== null ? `#${masterChallanNo}` : (language === 'bn' ? 'অনির্ধারিত' : 'Not Initialized')}
-                        </span>
+                      <div className="bg-white dark:bg-slate-900 p-3 rounded-md border border-indigo-100 dark:border-indigo-950 space-y-2 text-xs font-black">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">{language === 'bn' ? 'ডাটাবেজে বর্তমান সর্বশেষ ব্যবহৃত চালান নং:' : 'Last Used Challan No in DB:'}</span>
+                          <span className="text-slate-700 dark:text-slate-300">
+                            {masterChallanNo !== null ? `#${masterChallanNo}` : (language === 'bn' ? 'অনির্ধারিত' : 'Not Initialized')}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-850">
+                          <span className="text-indigo-600 dark:text-indigo-400">{language === 'bn' ? 'পরবর্তী নতুন তৈরি হতে যাওয়া চালান নং:' : 'Next Expected Challan No:'}</span>
+                          <span className="text-indigo-600 dark:text-indigo-400 text-sm">
+                            {masterChallanNo !== null ? `#${masterChallanNo + 1}` : (language === 'bn' ? 'অনির্ধারিত' : 'Not Initialized')}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="flex gap-2 max-w-md items-end">
                         <div className="flex-1">
                           <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
-                            {language === 'bn' ? 'নতুন মাস্টার চালান নং শুরু' : 'New Starting Master Challan'}
+                            {language === 'bn' ? 'নতুন শুরু হতে যাওয়া চালান নং (যা দিয়ে পরবর্তী চালান শুরু হবে)' : 'New Starting Challan No (Next assigned challan)'}
                           </label>
                           <input 
                             type="number" 
                             className="w-full px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-sm font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none"
                             value={adminStartingChallanInput}
-                            placeholder={masterChallanNo !== null ? masterChallanNo.toString() : "e.g. 1000"}
+                            placeholder={masterChallanNo !== null ? (masterChallanNo + 1).toString() : "e.g. 1000"}
                             onChange={e => setAdminStartingChallanInput(e.target.value)}
                           />
                         </div>
                         <button
                           onClick={async () => {
                             const val = parseInt(adminStartingChallanInput);
-                            if (isNaN(val) || val < 0) {
-                              alert(language === 'bn' ? 'অনুগ্রহ করে একটি সঠিক সংখ্যা দিন!' : 'Please enter a valid positive number!');
+                            if (isNaN(val) || val < 1) {
+                              alert(language === 'bn' ? 'অনুগ্রহ করে ১ বা তার চেয়ে বড় একটি সঠিক সংখ্যা দিন!' : 'Please enter a valid positive number starting from 1!');
                               return;
                             }
                             
@@ -1981,8 +2001,8 @@ export default function App() {
                               isOpen: true,
                               title: language === 'bn' ? 'মাস্টার কাউন্টার পরিবর্তন নিশ্চিতকরণ' : 'Confirm Master Counter Update',
                               message: language === 'bn' 
-                                ? `আপনি কি প্রধান চালান নম্বরটি পরিবর্তন করে ${val} করতে চান?` 
-                                : `Are you sure you want to set the Master Counter to ${val}?`,
+                                ? `আপনি কি পরবর্তী নতুন চালান নম্বরটি পরিবর্তন করে ${val} দিয়ে শুরু করতে চান?` 
+                                : `Are you sure you want to set the next starting Challan number to ${val}?`,
                               confirmText: language === 'bn' ? 'হ্যাঁ, সেট করুন' : 'Yes, Set',
                               cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
                               isDanger: false,
@@ -1991,11 +2011,13 @@ export default function App() {
                                 try {
                                   const docRef = doc(db, 'settings', 'master_counters');
                                   await setDoc(docRef, {
-                                    currentChallanNo: val,
+                                    currentChallanNo: val - 1,
                                     lastUpdated: Date.now(),
                                     lastUpdatedBy: currentUserEmail || currentUser || 'Admin'
                                   }, { merge: true });
-                                  alert(language === 'bn' ? 'মাস্টার চালান নাম্বারটি সফলভাবে আপডেট করা হয়েছে!' : 'Master counter successfully updated in Firestore!');
+                                  alert(language === 'bn' 
+                                    ? `মাস্টার চালান নাম্বারটি সফলভাবে আপডেট করা হয়েছে! পরবর্তী নতুন চালানটি #${val} থেকে শুরু হবে।` 
+                                    : `Master counter successfully updated in Firestore! Next new challan will be #${val}.`);
                                   setAdminStartingChallanInput('');
                                 } catch (err: any) {
                                   console.error("Error setting master counter: ", err);
@@ -3674,24 +3696,14 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     activeInput: 'weight' as 'weight' | 'targetPrice'
   });
 
-  // Sync expected Challan number if input is currently empty
+  // Sync expected Challan number
   useEffect(() => {
-    setFormData(prev => {
-      if (!prev.challanNo || prev.challanNo === '') {
-        return { ...prev, challanNo: expectedNextChallan.toString() };
-      }
-      return prev;
-    });
+    setFormData(prev => ({ ...prev, challanNo: expectedNextChallan.toString() }));
   }, [expectedNextChallan]);
 
-  // Sync expected Challan number for minus calculate if input is currently empty
+  // Sync expected Challan number for minus calculate
   useEffect(() => {
-    setMinusFormData(prev => {
-      if (!prev.challanNo || prev.challanNo === '') {
-        return { ...prev, challanNo: expectedNextChallan.toString() };
-      }
-      return prev;
-    });
+    setMinusFormData(prev => ({ ...prev, challanNo: expectedNextChallan.toString() }));
   }, [expectedNextChallan]);
 
   // Real-time calculation logic for minus calculation
