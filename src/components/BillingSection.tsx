@@ -8,7 +8,8 @@ import {
   Users, 
   ChevronRight, 
   DollarSign,
-  Briefcase
+  Briefcase,
+  Download
 } from 'lucide-react';
 
 interface Calculation {
@@ -33,6 +34,7 @@ interface Calculation {
 interface BillingSectionProps {
   calculations: Calculation[];
   language: 'bn' | 'en';
+  onDownloadImage?: (elementId: string, fileName: string) => void;
 }
 
 const toBengaliDigits = (num: number | string): string => {
@@ -40,7 +42,7 @@ const toBengaliDigits = (num: number | string): string => {
   return num.toString().replace(/\d/g, d => bnNums[parseInt(d)]);
 };
 
-export default function BillingSection({ calculations, language }: BillingSectionProps) {
+export default function BillingSection({ calculations, language, onDownloadImage }: BillingSectionProps) {
   // Setup default date range: past 7 days
   const todayStr = new Date().toISOString().split('T')[0];
   const lastWeekStr = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -51,6 +53,7 @@ export default function BillingSection({ calculations, language }: BillingSectio
   const [rateMode, setRateMode] = useState<'challan' | 'custom'>('challan');
   const [customRate, setCustomRate] = useState<string>('300');
   const [customMonType, setCustomMonType] = useState<number>(40);
+  const [showPreviewModal, setShowPreviewModal] = useState<boolean>(false);
 
   // Filter active (non-deleted) calculations in range
   const rangeCalculations = useMemo(() => {
@@ -151,14 +154,24 @@ export default function BillingSection({ calculations, language }: BillingSectio
             </p>
           </div>
           
-          <button
-            onClick={() => window.print()}
-            disabled={filteredCalculations.length === 0}
-            className={`flex items-center gap-2 h-10 px-5 bg-yellow-400 hover:bg-yellow-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:border-slate-800 text-slate-950 font-black text-xs uppercase tracking-widest rounded-lg shadow-md transition-all active:scale-95 cursor-pointer border border-yellow-300`}
-          >
-            <Printer size={14} />
-            <span>{language === 'bn' ? 'বিল প্রিন্ট করুন' : 'Print Invoice'}</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setShowPreviewModal(true)}
+              disabled={filteredCalculations.length === 0}
+              className={`flex items-center gap-2 h-10 px-5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-800 disabled:text-slate-600 disabled:border-slate-800 text-white font-black text-xs uppercase tracking-widest rounded-lg shadow-md transition-all active:scale-95 cursor-pointer border border-indigo-500`}
+            >
+              <Download size={14} />
+              <span>{language === 'bn' ? 'জেপিজি ডাউনলোড' : 'Download JPG'}</span>
+            </button>
+            <button
+              onClick={() => setShowPreviewModal(true)}
+              disabled={filteredCalculations.length === 0}
+              className={`flex items-center gap-2 h-10 px-5 bg-yellow-400 hover:bg-yellow-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:border-slate-800 text-slate-950 font-black text-xs uppercase tracking-widest rounded-lg shadow-md transition-all active:scale-95 cursor-pointer border border-yellow-300`}
+            >
+              <Printer size={14} />
+              <span>{language === 'bn' ? 'বিল প্রিন্ট করুন' : 'Print Invoice'}</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -371,7 +384,7 @@ export default function BillingSection({ calculations, language }: BillingSectio
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           
           {/* Detailed table of calculations (Hidden on print) */}
-          <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm no-print">
+          <div className="lg:col-span-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm no-print">
             <div className="p-4 bg-slate-50 dark:bg-slate-950 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
               <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-200">
                 {language === 'bn' ? 'চালানের বিস্তারিত বিবরণী' : 'Included Challan Specifications'}
@@ -432,196 +445,234 @@ export default function BillingSection({ calculations, language }: BillingSectio
             </div>
           </div>
 
-          {/* PRINTABLE BILL / INVOICE PREVIEW AREA */}
-          <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden text-slate-900 print:border-none print:shadow-none print:p-0">
-            {/* Action panel above invoice preview (Hidden on print) */}
-            <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between no-print">
-              <h3 className="text-xs font-black uppercase tracking-wider text-slate-650 flex items-center gap-1.5">
-                <span>📄 {language === 'bn' ? 'চালান মেমো প্রিভিউ' : 'Invoice Live Preview'}</span>
-              </h3>
-              <button
-                onClick={() => window.print()}
-                className="px-3 py-1 bg-slate-900 hover:bg-black text-white rounded text-[10px] font-black uppercase tracking-wider transition-all active:scale-95 cursor-pointer flex items-center gap-1"
+        </div>
+      )}
+
+      {/* PREVIEW MODAL OVERLAY */}
+      {showPreviewModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs font-sans overflow-y-auto no-print">
+          <div className="bg-white text-slate-900 rounded-xl shadow-2xl border border-slate-300 max-w-4xl w-full overflow-hidden flex flex-col my-8">
+            
+            {/* Header controls (No print) */}
+            <div className="bg-slate-950 p-4 font-black flex justify-between items-center text-white no-print border-b border-slate-800">
+              <span className="text-xs uppercase tracking-widest flex items-center gap-1.5 text-yellow-400">
+                <Printer size={13} />
+                {language === 'bn' ? 'চালান মেমো প্রিভিউ' : 'Invoice Live Preview'}
+              </span>
+              <button 
+                onClick={() => setShowPreviewModal(false)} 
+                className="hover:bg-white/10 w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer"
               >
-                <Printer size={11} />
-                <span>{language === 'bn' ? 'প্রিন্ট' : 'Print'}</span>
+                ✕
               </button>
             </div>
 
-            {/* Print area */}
-            <div className="p-8 space-y-6 bg-white font-sans text-slate-900 leading-relaxed max-w-[21cm] mx-auto print:p-0 print:mx-0">
-              
-              {/* Invoice Header */}
-              <div className="text-center space-y-1.5 pb-4 border-b-2 border-slate-900">
-                <h2 className="text-2xl font-black text-slate-950 uppercase tracking-tight">
-                  {language === 'bn' ? 'এ. এস. এন্টারপ্রাইজ' : 'A. S. Enterprise'}
-                </h2>
-                <p className="text-[10px] font-bold text-slate-600 tracking-widest uppercase">
-                  {language === 'bn' ? 'খড়ি প্রক্রিয়াজাতকরণ এবং পাইকারি সরবরাহকারী' : 'Firewood Processor & Bulk Depot Supplier'}
-                </p>
-                <div className="text-[9px] text-slate-500 space-y-0.5">
-                  <p>{language === 'bn' ? 'প্রোপ্রাইটর: আবু সালেহ | মোবাইল: +৮৮০১৭৬৬-৭৬১৮৭৭' : 'Proprietor: Abu Saleh | Mobile: +8801766-761877'}</p>
-                  <p>{language === 'bn' ? 'মুন্সিগঞ্জ রোড, পঞ্চসার, মুন্সিগঞ্জ সদর' : 'Munshiganj Road, Panchasar, Munshiganj Sadar'}</p>
-                </div>
-              </div>
-
-              {/* Memo Info Bar */}
-              <div className="grid grid-cols-2 gap-4 text-xs font-semibold bg-slate-50 p-3 rounded border border-slate-200">
-                <div className="space-y-1">
-                  <p className="text-[9px] uppercase tracking-wider text-slate-450 font-black">
-                    {language === 'bn' ? 'বিলের সময়সীমা / পরিসীমা' : 'Duration Covered'}
-                  </p>
-                  <p className="font-black text-slate-900 text-[11px]">{dateRangeText}</p>
-                </div>
-                <div className="space-y-1 text-right">
-                  <p className="text-[9px] uppercase tracking-wider text-slate-450 font-black">
-                    {language === 'bn' ? 'তারিখ' : 'Date of Report'}
-                  </p>
-                  <p className="font-black text-slate-900 text-[11px]">
-                    {new Date().toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US', {day: 'numeric', month: 'long', year: 'numeric'})}
-                  </p>
-                </div>
-                {selectedSeller !== 'ALL' && (
-                  <div className="col-span-2 border-t border-slate-200 pt-2 mt-1 space-y-0.5">
-                    <p className="text-[9px] uppercase tracking-wider text-slate-450 font-black">
-                      {language === 'bn' ? 'হিসাব গ্রহীতা / বিক্রেতা' : 'Supplier Account'}
-                    </p>
-                    <p className="font-black text-indigo-900 text-sm">{selectedSeller}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Invoice Main Table */}
-              <div className="space-y-3">
-                <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-900">
-                  {language === 'bn' ? 'ক্রয়কৃত চালানের বিবরণী:' : 'CARGO SHIPMENT SUMMARY:'}
-                </h4>
+            {/* Scrollable sheet container for screen viewing */}
+            <div className="p-6 bg-slate-100 flex-1 overflow-x-auto overflow-y-auto max-h-[70vh] flex justify-center items-start">
+              {/* Print area */}
+              <div id="print-billing-memo-area" className="p-8 space-y-6 bg-white font-sans text-slate-900 leading-relaxed w-[21cm] min-w-[21cm] shadow-lg border border-slate-200 print:p-0 print:border-none print:shadow-none print:mx-0">
                 
-                <table className="w-full text-left border-collapse border border-slate-300">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-800 text-[10px] font-black uppercase border-b border-slate-300">
-                      <th className="px-3 py-2 border-r border-slate-300 text-center w-8">SL</th>
-                      <th className="px-3 py-2 border-r border-slate-300">Date</th>
-                      <th className="px-3 py-2 border-r border-slate-300 text-center">Challan</th>
-                      {selectedSeller === 'ALL' && <th className="px-3 py-2 border-r border-slate-300">Seller</th>}
-                      <th className="px-3 py-2 border-r border-slate-300 text-right">Net KG</th>
-                      <th className="px-3 py-2 border-r border-slate-300 text-right">Yield</th>
-                      <th className="px-3 py-2 text-right">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-[10px] font-semibold divide-y divide-slate-300">
-                    {filteredCalculations.map((calc, idx) => {
-                      const deduction = (calc.isMinusCalculated && calc.deductedWeight !== undefined) ? calc.deductedWeight : 0;
-                      const netKg = Math.max(0, calc.totalKg - deduction);
-                      const monType = calc.monType || 40;
-                      const monCount = Math.floor(netKg / monType);
-                      const extraKg = parseFloat((netKg % monType).toFixed(2));
-                      
-                      const monVal = netKg / monType;
-                      const displayPrice = rateMode === 'challan' 
-                        ? calc.totalPrice 
-                        : monVal * (parseFloat(customRate) || 0);
+                {/* Invoice Header */}
+                <div className="text-center space-y-1.5 pb-4 border-b-2 border-slate-900">
+                  <h2 className="text-2xl font-black text-slate-950 uppercase tracking-tight">
+                    {language === 'bn' ? 'এ. এস. এন্টারপ্রাইজ' : 'A. S. Enterprise'}
+                  </h2>
+                  <p className="text-[10px] font-bold text-slate-600 tracking-widest uppercase">
+                    {language === 'bn' ? 'খড়ি প্রক্রিয়াজাতকরণ এবং পাইকারি সরবরাহকারী' : 'Firewood Processor & Bulk Depot Supplier'}
+                  </p>
+                  <div className="text-[9px] text-slate-500 space-y-0.5">
+                    <p>{language === 'bn' ? 'প্রোপ্রাইটর: আবু সালেহ | মোবাইল: +৮৮০১৭৬৬-৭৬১৮৭৭' : 'Proprietor: Abu Saleh | Mobile: +8801766-761877'}</p>
+                    <p>{language === 'bn' ? 'মুন্সিগঞ্জ রোড, পঞ্চসার, মুন্সিগঞ্জ সদর' : 'Munshiganj Road, Panchasar, Munshiganj Sadar'}</p>
+                  </div>
+                </div>
 
-                      return (
-                        <tr key={calc.id} className="text-slate-800">
-                          <td className="px-3 py-2 border-r border-slate-300 text-center font-bold">
-                            {language === 'bn' ? toBengaliDigits(idx + 1) : idx + 1}
-                          </td>
-                          <td className="px-3 py-2 border-r border-slate-300 whitespace-nowrap">
-                            {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US', {day: 'numeric', month: 'short'})}
-                          </td>
-                          <td className="px-3 py-2 border-r border-slate-300 text-center font-bold">
-                            #{calc.challanNo}
-                          </td>
-                          {selectedSeller === 'ALL' && (
-                            <td className="px-3 py-2 border-r border-slate-300 truncate max-w-[80px]">
-                              {calc.sellerName}
-                            </td>
-                          )}
-                          <td className="px-3 py-2 border-r border-slate-300 text-right font-bold">
-                            {language === 'bn' ? toBengaliDigits(netKg) : netKg}
-                          </td>
-                          <td className="px-3 py-2 border-r border-slate-300 text-right whitespace-nowrap">
-                            {language === 'bn' 
-                              ? `${toBengaliDigits(monCount)} মণ ${toBengaliDigits(extraKg)} কেজি`
-                              : `${monCount} M ${extraKg} K`}
-                          </td>
-                          <td className="px-3 py-2 text-right font-black">
-                            ৳{language === 'bn' ? toBengaliDigits(Math.round(displayPrice)) : Math.round(displayPrice)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Invoice Summary Block */}
-              <div className="flex justify-end pt-2">
-                <div className="w-80 border border-slate-300 bg-slate-50 rounded p-4 space-y-2.5 text-xs font-semibold">
-                  <div className="flex justify-between text-slate-700">
-                    <span>{language === 'bn' ? 'মোট চালানের ভলিউম:' : 'Total Shipment Count:'}</span>
-                    <span className="font-bold text-slate-900">
-                      {language === 'bn' ? `${toBengaliDigits(stats.totalChallans)} টি` : `${stats.totalChallans} Challans`}
-                    </span>
+                {/* Memo Info Bar */}
+                <div className="grid grid-cols-2 gap-4 text-xs font-semibold bg-slate-50 p-3 rounded border border-slate-200">
+                  <div className="space-y-1">
+                    <p className="text-[9px] uppercase tracking-wider text-slate-450 font-black">
+                      {language === 'bn' ? 'বিলের সময়সীমা / পরিসীমা' : 'Duration Covered'}
+                    </p>
+                    <p className="font-black text-slate-900 text-[11px]">{dateRangeText}</p>
                   </div>
-                  <div className="flex justify-between text-slate-700">
-                    <span>{language === 'bn' ? 'মোট নিট ওজন (KG):' : 'Total Net Weight (KG):'}</span>
-                    <span className="font-bold text-slate-900 font-mono">
-                      {language === 'bn' ? `${toBengaliDigits(stats.netKg.toLocaleString())} কেজি` : `${stats.netKg.toLocaleString()} KG`}
-                    </span>
+                  <div className="space-y-1 text-right">
+                    <p className="text-[9px] uppercase tracking-wider text-slate-450 font-black">
+                      {language === 'bn' ? 'তারিখ' : 'Date of Report'}
+                    </p>
+                    <p className="font-black text-slate-900 text-[11px]">
+                      {new Date().toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US', {day: 'numeric', month: 'long', year: 'numeric'})}
+                    </p>
                   </div>
-                  <div className="flex justify-between text-slate-700">
-                    <span>{language === 'bn' ? 'মোট রূপান্তরিত মন:' : 'Total Converted Yield:'}</span>
-                    <span className="font-bold text-slate-900">
-                      {language === 'bn' 
-                        ? `${toBengaliDigits(statsMon)} মণ ${toBengaliDigits(statsKg)} কেজি` 
-                        : `${statsMon} Mon ${statsKg} KG`}
-                    </span>
-                  </div>
-                  {rateMode === 'custom' && (
-                    <div className="flex justify-between text-slate-700">
-                      <span>{language === 'bn' ? 'নির্ধারিত কাস্টম দর:' : 'Custom Flat Rate:'}</span>
-                      <span className="font-bold text-slate-900">
-                        ৳{language === 'bn' ? toBengaliDigits(customRate) : customRate} /মণ
-                      </span>
+                  {selectedSeller !== 'ALL' && (
+                    <div className="col-span-2 border-t border-slate-200 pt-2 mt-1 space-y-0.5">
+                      <p className="text-[9px] uppercase tracking-wider text-slate-450 font-black">
+                        {language === 'bn' ? 'হিসাব গ্রহীতা / বিক্রেতা' : 'Supplier Account'}
+                      </p>
+                      <p className="font-black text-indigo-900 text-sm">{selectedSeller}</p>
                     </div>
                   )}
-                  <div className="flex justify-between border-t border-slate-300 pt-2.5 text-slate-950 text-sm font-black uppercase">
-                    <span>{language === 'bn' ? 'সর্বমোট পরিশোধীয় বিল:' : 'Grand Total Due:'}</span>
-                    <span className="text-slate-950 font-mono text-base">
-                      ৳{language === 'bn' ? toBengaliDigits(Math.round(stats.grandTotal).toLocaleString()) : Math.round(stats.grandTotal).toLocaleString()}
-                    </span>
-                  </div>
                 </div>
-              </div>
 
-              {/* Verified signatures footer */}
-              <div className="grid grid-cols-3 gap-6 pt-16 text-center">
-                <div className="space-y-1">
-                  <div className="border-t border-slate-400 pt-1.5 font-bold text-[9px] uppercase text-slate-600">
-                    {language === 'bn' ? 'প্রস্তুতকারী (Operator)' : 'Prepared By Operator'}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="border-t border-slate-400 pt-1.5 font-bold text-[9px] uppercase text-slate-600">
-                    {language === 'bn' ? 'যাচাইকারী (Manager)' : 'Checked By Manager'}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="border-t border-slate-400 pt-1.5 font-bold text-[9px] uppercase text-slate-600">
-                    {language === 'bn' ? 'প্রোপ্রাইটর স্বাক্ষর' : 'Proprietor Authorized'}
-                  </div>
-                </div>
-              </div>
+                {/* Invoice Main Table */}
+                <div className="space-y-3">
+                  <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-900">
+                    {language === 'bn' ? 'ক্রয়কৃত চালানের বিবরণী:' : 'CARGO SHIPMENT SUMMARY:'}
+                  </h4>
+                  
+                  <table className="w-full text-left border-collapse border border-slate-300">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-800 text-[10px] font-black uppercase border-b border-slate-300">
+                        <th className="px-3 py-2 border-r border-slate-300 text-center w-8">SL</th>
+                        <th className="px-3 py-2 border-r border-slate-300">Date</th>
+                        <th className="px-3 py-2 border-r border-slate-300 text-center">Challan</th>
+                        {selectedSeller === 'ALL' && <th className="px-3 py-2 border-r border-slate-300">Seller</th>}
+                        <th className="px-3 py-2 border-r border-slate-300 text-right">Net KG</th>
+                        <th className="px-3 py-2 border-r border-slate-300 text-right">Yield</th>
+                        <th className="px-3 py-2 text-right">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-[10px] font-semibold divide-y divide-slate-300">
+                      {filteredCalculations.map((calc, idx) => {
+                        const deduction = (calc.isMinusCalculated && calc.deductedWeight !== undefined) ? calc.deductedWeight : 0;
+                        const netKg = Math.max(0, calc.totalKg - deduction);
+                        const monType = calc.monType || 40;
+                        const monCount = Math.floor(netKg / monType);
+                        const extraKg = parseFloat((netKg % monType).toFixed(2));
+                        
+                        const monVal = netKg / monType;
+                        const displayPrice = rateMode === 'challan' 
+                          ? calc.totalPrice 
+                          : monVal * (parseFloat(customRate) || 0);
 
-              <div className="text-center text-[8px] text-slate-400 font-mono pt-8 uppercase tracking-wider select-none">
-                *** Generated Securely by A.S. Enterprise Billing Ledger System ***
-              </div>
+                        return (
+                          <tr key={calc.id} className="text-slate-800">
+                            <td className="px-3 py-2 border-r border-slate-300 text-center font-bold">
+                              {language === 'bn' ? toBengaliDigits(idx + 1) : idx + 1}
+                            </td>
+                            <td className="px-3 py-2 border-r border-slate-300 whitespace-nowrap">
+                              {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US', {day: 'numeric', month: 'short'})}
+                            </td>
+                            <td className="px-3 py-2 border-r border-slate-300 text-center font-bold">
+                              #{calc.challanNo}
+                            </td>
+                            {selectedSeller === 'ALL' && (
+                              <td className="px-3 py-2 border-r border-slate-300 truncate max-w-[80px]">
+                                {calc.sellerName}
+                              </td>
+                            )}
+                            <td className="px-3 py-2 border-r border-slate-300 text-right font-bold">
+                              {language === 'bn' ? toBengaliDigits(netKg) : netKg}
+                            </td>
+                            <td className="px-3 py-2 border-r border-slate-300 text-right whitespace-nowrap">
+                              {language === 'bn' 
+                                ? `${toBengaliDigits(monCount)} মণ ${toBengaliDigits(extraKg)} কেজি`
+                                : `${monCount} M ${extraKg} K`}
+                            </td>
+                            <td className="px-3 py-2 text-right font-black">
+                              ৳{language === 'bn' ? toBengaliDigits(Math.round(displayPrice)) : Math.round(displayPrice)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
 
+                {/* Invoice Summary Block */}
+                <div className="flex justify-end pt-2">
+                  <div className="w-80 border border-slate-300 bg-slate-50 rounded p-4 space-y-2.5 text-xs font-semibold">
+                    <div className="flex justify-between text-slate-700">
+                      <span>{language === 'bn' ? 'মোট চালানের ভলিউম:' : 'Total Shipment Count:'}</span>
+                      <span className="font-bold text-slate-900">
+                        {language === 'bn' ? `${toBengaliDigits(stats.totalChallans)} টি` : `${stats.totalChallans} Challans`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-slate-700">
+                      <span>{language === 'bn' ? 'মোট নিট ওজন (KG):' : 'Total Net Weight (KG):'}</span>
+                      <span className="font-bold text-slate-900 font-mono">
+                        {language === 'bn' ? `${toBengaliDigits(stats.netKg.toLocaleString())} কেজি` : `${stats.netKg.toLocaleString()} KG`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-slate-700">
+                      <span>{language === 'bn' ? 'মোট রূপান্তরিত মন:' : 'Total Converted Yield:'}</span>
+                      <span className="font-bold text-slate-900">
+                        {language === 'bn' 
+                          ? `${toBengaliDigits(statsMon)} মণ ${toBengaliDigits(statsKg)} কেজি` 
+                          : `${statsMon} Mon ${statsKg} KG`}
+                      </span>
+                    </div>
+                    {rateMode === 'custom' && (
+                      <div className="flex justify-between text-slate-700">
+                        <span>{language === 'bn' ? 'নির্ধারিত কাস্টম দর:' : 'Custom Flat Rate:'}</span>
+                        <span className="font-bold text-slate-900">
+                          ৳{language === 'bn' ? toBengaliDigits(customRate) : customRate} /মণ
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex justify-between border-t border-slate-300 pt-2.5 text-slate-950 text-sm font-black uppercase">
+                      <span>{language === 'bn' ? 'সর্বমোট পরিশোধীয় বিল:' : 'Grand Total Due:'}</span>
+                      <span className="text-slate-950 font-mono text-base">
+                        ৳{language === 'bn' ? toBengaliDigits(Math.round(stats.grandTotal).toLocaleString()) : Math.round(stats.grandTotal).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Verified signatures footer */}
+                <div className="grid grid-cols-3 gap-6 pt-16 text-center">
+                  <div className="space-y-1">
+                    <div className="border-t border-slate-400 pt-1.5 font-bold text-[9px] uppercase text-slate-600">
+                      {language === 'bn' ? 'প্রস্তুতকারী (Operator)' : 'Prepared By Operator'}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="border-t border-slate-400 pt-1.5 font-bold text-[9px] uppercase text-slate-600">
+                      {language === 'bn' ? 'যাচাইকারী (Manager)' : 'Checked By Manager'}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="border-t border-slate-400 pt-1.5 font-bold text-[9px] uppercase text-slate-600">
+                      {language === 'bn' ? 'প্রোপ্রাইটর স্বাক্ষর' : 'Proprietor Authorized'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-center text-[8px] text-slate-400 font-mono pt-8 uppercase tracking-wider select-none">
+                  *** Generated Securely by A.S. Enterprise Billing Ledger System ***
+                </div>
+
+              </div>
             </div>
-          </div>
 
+            {/* Footer controls (No print) */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2 no-print flex-wrap">
+              <button 
+                type="button" 
+                onClick={() => setShowPreviewModal(false)} 
+                className="px-4.5 py-2 border border-slate-200 text-slate-500 rounded text-xs font-bold hover:bg-slate-100 transition-all active:scale-95 cursor-pointer"
+              >
+                {language === 'bn' ? 'বন্ধ করুন' : 'Close'}
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  onDownloadImage?.('print-billing-memo-area', `Bill-${startDate}-to-${endDate}`);
+                }} 
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-black uppercase text-[10px] tracking-widest rounded shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download size={12} />
+                {language === 'bn' ? 'জেপিজি ডাউনলোড' : 'Download JPG'}
+              </button>
+              <button 
+                type="button" 
+                onClick={() => window.print()} 
+                className="px-5 py-2 bg-yellow-400 text-black font-black uppercase text-[10px] tracking-widest rounded shadow-md hover:bg-yellow-500 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Printer size={12} />
+                {language === 'bn' ? 'বিল প্রিন্ট করুন' : 'Print Invoice'}
+              </button>
+            </div>
+
+          </div>
         </div>
       )}
     </div>

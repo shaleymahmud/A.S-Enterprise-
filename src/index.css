@@ -39,10 +39,11 @@ input[type=number] {
   body * {
     visibility: hidden;
   }
-  #print-memo-area, #print-memo-area * {
+  #print-dispatch-memo-area, #print-dispatch-memo-area *, 
+  #print-billing-memo-area, #print-billing-memo-area * {
     visibility: visible;
   }
-  #print-memo-area {
+  #print-dispatch-memo-area, #print-billing-memo-area {
     position: absolute;
     left: 0;
     top: 0;

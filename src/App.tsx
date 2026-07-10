@@ -34,6 +34,7 @@ import AssistantSection from './components/AssistantSection';
 import BillingSection from './components/BillingSection';
 import ExpensesSection from './components/ExpensesSection';
 import LoginScreen from './components/LoginScreen';
+import { toJpeg } from 'html-to-image';
 import { auth, db } from './firebase';
 import { 
   onAuthStateChanged, 
@@ -1579,6 +1580,33 @@ export default function App() {
     printWindow.print();
   };
 
+  const downloadElementAsImage = (elementId: string, fileName: string) => {
+    const node = document.getElementById(elementId);
+    if (!node) {
+      alert(language === 'bn' ? 'ডকুমেন্টটি পাওয়া যায়নি!' : 'Document not found!');
+      return;
+    }
+    
+    // Create a temporary loading indicator if needed, but toJpeg is fast.
+    toJpeg(node, { 
+      quality: 0.95, 
+      backgroundColor: '#ffffff',
+      fontEmbedCSS: '',
+      // @ts-ignore
+      skipFonts: true
+    })
+      .then((dataUrl) => {
+        const link = document.createElement('a');
+        link.download = `${fileName}.jpg`;
+        link.href = dataUrl;
+        link.click();
+      })
+      .catch((error) => {
+        console.error('Error generating image: ', error);
+        alert(language === 'bn' ? 'ইমেজ ডাউনলোড করতে সমস্যা হয়েছে!' : 'Failed to download image!');
+      });
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-4">
@@ -1729,6 +1757,7 @@ export default function App() {
                 onDeleteLedger={deleteTopUpCashBox}
                 onRestoreLedger={restoreTopUpCashBox}
                 onPermDeleteLedger={permanentDeleteLedger}
+                onDownloadImage={downloadElementAsImage}
               />
             </motion.div>
           )}
@@ -1824,6 +1853,7 @@ export default function App() {
               <BillingSection 
                 calculations={calculations}
                 language={language}
+                onDownloadImage={downloadElementAsImage}
               />
             </motion.div>
           )}
@@ -2221,6 +2251,7 @@ interface HomeSectionProps {
   onDeleteLedger?: (id: string) => void;
   onRestoreLedger?: (id: string) => void;
   onPermDeleteLedger?: (id: string) => void;
+  onDownloadImage?: (elementId: string, fileName: string) => void;
 }
 
 function HomeSection({ 
@@ -2250,7 +2281,8 @@ function HomeSection({
   onEditLedger,
   onDeleteLedger,
   onRestoreLedger,
-  onPermDeleteLedger
+  onPermDeleteLedger,
+  onDownloadImage
 }: HomeSectionProps) {
   const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger'>('active');
   const [cashLedgerSubTab, setCashLedgerSubTab] = useState<'active' | 'trash'>('active');
@@ -3476,7 +3508,7 @@ function HomeSection({
             </div>
 
             {/* Print-Ready Invoice Document Sheet */}
-            <div id="print-memo-area" className="p-8 bg-white flex-1 text-slate-900 font-sans text-xs">
+            <div id="print-dispatch-memo-area" className="p-8 bg-white flex-1 text-slate-900 font-sans text-xs">
               
               {/* Invoice Header */}
               <div className="flex justify-between items-start border-b-2 border-slate-900 pb-5">
@@ -3491,8 +3523,8 @@ function HomeSection({
                     </div>
                   </div>
                   <div className="text-[10px] text-slate-500 font-medium mt-3 space-y-0.5">
-                    <p>{language === 'bn' ? 'ডিপো কার্যালয়: কালিয়াকৈর, গাজীপুর, ঢাকা' : 'Depot Office: Kaliakair, Gazipur, Dhaka'}</p>
-                    <p>{language === 'bn' ? 'মোবাইল: +৮৮০১৭১২-৩৪৫৬৭৮' : 'Mobile: +8801712-345678'}</p>
+                    <p>{language === 'bn' ? 'ডিপো কার্যালয়: কুমাজপুর , সাহেবগঞ্জ নতুন বাজার ,সলঙ্গা , রায়গঞ্জ , সিরাজগঞ্জ' : 'Depot Office: Kumajpur, Shahebganj Notun Bazar, Solonga, Raiganj, Sirajganj'}</p>
+                    <p>{language === 'bn' ? 'মোবাইল: ০১৭৬৬৭৬১৮৭৭' : 'Mobile: 01766761877'}</p>
                     <p>Email: asenterprise.firewood@gmail.com</p>
                   </div>
                 </div>
@@ -3617,13 +3649,21 @@ function HomeSection({
             </div>
 
             {/* Footer controls (No print) */}
-            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2 no-print">
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2 no-print flex-wrap">
               <button 
                 type="button" 
                 onClick={() => setMemoCalc(null)} 
                 className="px-4.5 py-2 border border-slate-200 text-slate-500 rounded text-xs font-bold hover:bg-slate-100 transition-all active:scale-95 cursor-pointer"
               >
                 {language === 'bn' ? 'বন্ধ করুন' : 'Close'}
+              </button>
+              <button 
+                type="button" 
+                onClick={() => onDownloadImage?.('print-dispatch-memo-area', `Memo-${memoCalc?.challanNo || 'Invoice'}`)} 
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-black uppercase text-[10px] tracking-widest rounded shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download size={12} />
+                {language === 'bn' ? 'জেপিজি ডাউনলোড' : 'Download JPG'}
               </button>
               <button 
                 type="button" 
