@@ -32,6 +32,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import AssistantSection from './components/AssistantSection';
 import BillingSection from './components/BillingSection';
+import ExpensesSection from './components/ExpensesSection';
 import LoginScreen from './components/LoginScreen';
 import { auth, db } from './firebase';
 import { 
@@ -1805,6 +1806,16 @@ export default function App() {
             <motion.div key="billing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <BillingSection 
                 calculations={calculations}
+                language={language}
+              />
+            </motion.div>
+          )}
+          {activeTab === 'expenses' && (
+            <motion.div key="expenses" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <ExpensesSection 
+                expenses={expenses}
+                onAddExpense={addExpense}
+                onDeleteExpense={deleteExpense}
                 language={language}
               />
             </motion.div>
