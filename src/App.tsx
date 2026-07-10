@@ -968,6 +968,239 @@ export default function App() {
     }
   };
 
+  const editTopUpCashBox = async (ledgerId: string, newAmount: number): Promise<boolean> => {
+    try {
+      await runTransaction(db, async (transaction) => {
+        const ledgerDocRef = doc(db, 'cash_ledger', ledgerId);
+        const ledgerSnap = await transaction.get(ledgerDocRef);
+        if (!ledgerSnap.exists()) {
+          throw new Error("Ledger entry not found!");
+        }
+        const ledgerData = ledgerSnap.data();
+        
+        const oldAmount = ledgerData.amount || 0;
+        const diff = newAmount - oldAmount;
+
+        const cashboxDocRef = doc(db, 'settings', 'cashbox');
+        const cashboxSnap = await transaction.get(cashboxDocRef);
+        let currentBalance = 0;
+        if (cashboxSnap.exists()) {
+          currentBalance = cashboxSnap.data().balance || 0;
+        }
+
+        const isCredit = ledgerData.type === 'credit';
+        const nextBalance = parseFloat((currentBalance + (isCredit ? diff : -diff)).toFixed(2));
+        if (nextBalance < 0) {
+          throw new Error("INSUFFICIENT_CASHBOX_BALANCE");
+        }
+
+        // Update the cashbox balance
+        transaction.set(cashboxDocRef, {
+          balance: nextBalance,
+          lastUpdated: Date.now(),
+          lastUpdatedBy: currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest')
+        }, { merge: true });
+
+        // Preserve description but add Edited suffix
+        let updatedDesc = ledgerData.description || '';
+        const editedSuffixBn = ' (সংশোধিত)';
+        const editedSuffixEn = ' (Edited)';
+        if (!updatedDesc.includes(editedSuffixBn) && !updatedDesc.includes(editedSuffixEn)) {
+          updatedDesc += language === 'bn' ? editedSuffixBn : editedSuffixEn;
+        }
+
+        // Update ledger entry
+        transaction.update(ledgerDocRef, {
+          amount: newAmount,
+          balanceAfter: parseFloat((ledgerData.balanceAfter + (isCredit ? diff : -diff)).toFixed(2)),
+          description: updatedDesc,
+          lastEditedAt: Date.now(),
+          lastEditedBy: currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest')
+        });
+      });
+      return true;
+    } catch (err: any) {
+      console.error("Error editing ledger transaction: ", err);
+      if (err.message === "INSUFFICIENT_CASHBOX_BALANCE") {
+        alert(language === 'bn' ? 'সংশোধন করা সম্ভব নয়! ক্যাশ বক্স ব্যালেন্স মাইনাস হয়ে যাবে। ' : 'Cannot edit! Cash Box balance would go negative.');
+      } else {
+        alert(language === 'bn' ? 'লেনদেন সংশোধন করতে সমস্যা হয়েছে!' : 'Error editing transaction: ' + err.message);
+      }
+      return false;
+    }
+  };
+
+  const deleteTopUpCashBox = (ledgerId: string): void => {
+    setConfirmDialog({
+      isOpen: true,
+      title: language === 'bn' ? 'লেনদেন মুছে ফেলার নিশ্চিতকরণ' : 'Confirm Transaction Deletion',
+      message: language === 'bn' 
+        ? 'আপনি কি সত্যিই এই লেনদেনটি মুছে ফেলতে চান? এটি ক্যাশ বক্স ব্যালেন্স সংশোধন করবে এবং রিসাইকেল বিনে পাঠানো হবে।' 
+        : 'Are you sure you want to delete this transaction? It will adjust the cash box balance and be moved to the Recycle Bin.',
+      confirmText: language === 'bn' ? 'হ্যাঁ, মুছুন' : 'Yes, Delete',
+      cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          await runTransaction(db, async (transaction) => {
+            const ledgerDocRef = doc(db, 'cash_ledger', ledgerId);
+            const ledgerSnap = await transaction.get(ledgerDocRef);
+            if (!ledgerSnap.exists()) {
+              throw new Error("Ledger entry not found!");
+            }
+            const ledgerData = ledgerSnap.data();
+            if (ledgerData.isDeleted) {
+              throw new Error("Already deleted!");
+            }
+
+            const amount = ledgerData.amount || 0;
+
+            const cashboxDocRef = doc(db, 'settings', 'cashbox');
+            const cashboxSnap = await transaction.get(cashboxDocRef);
+            let currentBalance = 0;
+            if (cashboxSnap.exists()) {
+              currentBalance = cashboxSnap.data().balance || 0;
+            }
+
+            const isCredit = ledgerData.type === 'credit';
+            const diff = isCredit ? -amount : amount;
+            const nextBalance = parseFloat((currentBalance + diff).toFixed(2));
+            if (nextBalance < 0) {
+              throw new Error("INSUFFICIENT_CASHBOX_BALANCE");
+            }
+
+            // Update the cashbox balance
+            transaction.set(cashboxDocRef, {
+              balance: nextBalance,
+              lastUpdated: Date.now(),
+              lastUpdatedBy: currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest')
+            }, { merge: true });
+
+            // Update ledger entry to mark as soft deleted
+            transaction.update(ledgerDocRef, {
+              isDeleted: true,
+              deletedAt: Date.now(),
+              deletedBy: currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest'),
+              deletedByName: currentUser || 'Admin'
+            });
+          });
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+        } catch (err: any) {
+          console.error("Error deleting ledger entry: ", err);
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          if (err.message === "INSUFFICIENT_CASHBOX_BALANCE") {
+            alert(language === 'bn' ? 'ডিলিট করা সম্ভব নয়! ক্যাশ বক্স ব্যালেন্স মাইনাস হয়ে যাবে।' : 'Cannot delete! Cash Box balance would go negative.');
+          } else {
+            alert(language === 'bn' ? 'লেনদেনটি মুছতে সমস্যা হয়েছে!' : 'Error deleting transaction: ' + err.message);
+          }
+        }
+      }
+    });
+  };
+
+  const restoreTopUpCashBox = (ledgerId: string): void => {
+    setConfirmDialog({
+      isOpen: true,
+      title: language === 'bn' ? 'লেনদেন পুনরুদ্ধারের নিশ্চিতকরণ' : 'Confirm Transaction Restoration',
+      message: language === 'bn'
+        ? 'আপনি কি সত্যিই এই লেনদেনটি পুনরুদ্ধার করতে চান? এটি ক্যাশ বক্স ব্যালেন্স সংশোধন করবে।'
+        : 'Are you sure you want to restore this transaction? It will adjust the cash box balance accordingly.',
+      confirmText: language === 'bn' ? 'হ্যাঁ, পুনরুদ্ধার করুন' : 'Yes, Restore',
+      cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+      isDanger: false,
+      onConfirm: async () => {
+        try {
+          await runTransaction(db, async (transaction) => {
+            const ledgerDocRef = doc(db, 'cash_ledger', ledgerId);
+            const ledgerSnap = await transaction.get(ledgerDocRef);
+            if (!ledgerSnap.exists()) {
+              throw new Error("Ledger entry not found!");
+            }
+            const ledgerData = ledgerSnap.data();
+            if (!ledgerData.isDeleted) {
+              throw new Error("Not deleted!");
+            }
+
+            const amount = ledgerData.amount || 0;
+
+            const cashboxDocRef = doc(db, 'settings', 'cashbox');
+            const cashboxSnap = await transaction.get(cashboxDocRef);
+            let currentBalance = 0;
+            if (cashboxSnap.exists()) {
+              currentBalance = cashboxSnap.data().balance || 0;
+            }
+
+            const isCredit = ledgerData.type === 'credit';
+            const diff = isCredit ? amount : -amount;
+            const nextBalance = parseFloat((currentBalance + diff).toFixed(2));
+            if (nextBalance < 0) {
+              throw new Error("INSUFFICIENT_CASHBOX_BALANCE");
+            }
+
+            // Update the cashbox balance
+            transaction.set(cashboxDocRef, {
+              balance: nextBalance,
+              lastUpdated: Date.now(),
+              lastUpdatedBy: currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest')
+            }, { merge: true });
+
+            // Update ledger entry to mark as active
+            transaction.update(ledgerDocRef, {
+              isDeleted: false,
+              restoredAt: Date.now(),
+              restoredBy: currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest')
+            });
+          });
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+        } catch (err: any) {
+          console.error("Error restoring ledger entry: ", err);
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          if (err.message === "INSUFFICIENT_CASHBOX_BALANCE") {
+            alert(language === 'bn' ? 'পুনরুদ্ধার করা সম্ভব নয়! ক্যাশ বক্স ব্যালেন্স মাইনাস হয়ে যাবে।' : 'Cannot restore! Cash Box balance would go negative.');
+          } else {
+            alert(language === 'bn' ? 'লেনদেনটি পুনরুদ্ধার করতে সমস্যা হয়েছে!' : 'Error restoring transaction: ' + err.message);
+          }
+        }
+      }
+    });
+  };
+
+  const permanentDeleteLedger = (ledgerId: string): void => {
+    setConfirmDialog({
+      isOpen: true,
+      title: language === 'bn' ? 'স্থায়ীভাবে মুছে ফেলার নিশ্চিতকরণ' : 'Confirm Permanent Deletion',
+      message: language === 'bn'
+        ? 'আপনি কি সত্যিই এই লেনদেনটি চিরতরে মুছে ফেলতে চান? এটি আর ফিরিয়ে আনা সম্ভব নয়!'
+        : 'Are you sure you want to permanently delete this transaction? This action is irreversible!',
+      confirmText: language === 'bn' ? 'হ্যাঁ, স্থায়ীভাবে মুছুন' : 'Yes, Delete Permanently',
+      cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          await runTransaction(db, async (transaction) => {
+            const ledgerDocRef = doc(db, 'cash_ledger', ledgerId);
+            const ledgerSnap = await transaction.get(ledgerDocRef);
+            if (!ledgerSnap.exists()) {
+              throw new Error("Ledger entry not found!");
+            }
+            const ledgerData = ledgerSnap.data();
+            if (!ledgerData.isDeleted) {
+              throw new Error("Only soft-deleted entries can be permanently deleted!");
+            }
+
+            // Delete the ledger entry from Firestore permanently
+            transaction.delete(ledgerDocRef);
+          });
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+        } catch (err: any) {
+          console.error("Error permanently deleting ledger entry: ", err);
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          alert(language === 'bn' ? 'লেনদেনটি স্থায়ীভাবে মুছতে সমস্যা হয়েছে!' : 'Error permanently deleting transaction: ' + err.message);
+        }
+      }
+    });
+  };
+
   const editCalculation = async (updated: Calculation) => {
     try {
       const { id, ...dataToUpdate } = updated;
@@ -1474,6 +1707,10 @@ export default function App() {
                 cashBoxBalance={cashBoxBalance}
                 cashLedger={cashLedger}
                 onTopUp={topUpCashBox}
+                onEditLedger={editTopUpCashBox}
+                onDeleteLedger={deleteTopUpCashBox}
+                onRestoreLedger={restoreTopUpCashBox}
+                onPermDeleteLedger={permanentDeleteLedger}
               />
             </motion.div>
           )}
@@ -1488,6 +1725,7 @@ export default function App() {
                 receiptVisibility={receiptVisibility}
                 copyConfig={copyConfig}
                 cashBoxBalance={cashBoxBalance}
+                setConfirmDialog={setConfirmDialog}
               />
             </motion.div>
           )}
@@ -1941,6 +2179,10 @@ interface HomeSectionProps {
   cashBoxBalance: number;
   cashLedger: any[];
   onTopUp: (amount: number) => Promise<boolean>;
+  onEditLedger?: (id: string, newAmount: number) => Promise<boolean>;
+  onDeleteLedger?: (id: string) => void;
+  onRestoreLedger?: (id: string) => void;
+  onPermDeleteLedger?: (id: string) => void;
 }
 
 function HomeSection({ 
@@ -1966,14 +2208,28 @@ function HomeSection({
   handleExportCSV,
   cashBoxBalance,
   cashLedger = [],
-  onTopUp
+  onTopUp,
+  onEditLedger,
+  onDeleteLedger,
+  onRestoreLedger,
+  onPermDeleteLedger
 }: HomeSectionProps) {
   const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger'>('active');
+  const [cashLedgerSubTab, setCashLedgerSubTab] = useState<'active' | 'trash'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
+  const [editingLedger, setEditingLedger] = useState<any | null>(null);
   const [memoCalc, setMemoCalc] = useState<Calculation | null>(null);
   const [buyerName, setBuyerName] = useState<string>('');
   const [operatorFilter, setOperatorFilter] = useState('ALL');
+
+  const activeLedger = useMemo(() => {
+    return cashLedger.filter(entry => !entry.isDeleted);
+  }, [cashLedger]);
+
+  const deletedLedger = useMemo(() => {
+    return cashLedger.filter(entry => entry.isDeleted);
+  }, [cashLedger]);
 
   // Compute unique operators
   const operators = useMemo(() => {
@@ -2652,21 +2908,61 @@ function HomeSection({
                 </div>
               </div>
 
-              {/* Transaction Ledger Table */}
-              <div className="space-y-3">
-                <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
-                  {language === 'bn' ? "ক্যাশ লেনদেন অডিট খাতা" : "CASH TRANSACTION AUDIT LEDGER"}
-                </h3>
-                
-                {cashLedger.length === 0 ? (
-                  <div className="text-center py-12 text-slate-300 font-bold uppercase text-[10px]">
-                    {language === 'bn' ? 'কোনো লেনদেন রেকর্ড পাওয়া যায়নি!' : 'No transactions recorded yet!'}
+              {/* Transaction Ledger Table with Sub-tabs for Active and Recycle Bin */}
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-2">
+                  <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
+                    {language === 'bn' ? "ক্যাশ লেনদেন অডিট খাতা" : "CASH TRANSACTION AUDIT LEDGER"}
+                  </h3>
+                  
+                  {userRole === 'admin' && (
+                    <div className="flex bg-slate-100 dark:bg-slate-950 p-0.5 rounded-lg border border-slate-200 dark:border-slate-800 self-start sm:self-auto">
+                      <button
+                        onClick={() => setCashLedgerSubTab('active')}
+                        className={`px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                          cashLedgerSubTab === 'active'
+                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200/50 dark:border-slate-850'
+                            : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        <span>🟢 {language === 'bn' ? 'সক্রিয় লেনদেন' : 'Active Ledger'}</span>
+                        <span className="bg-slate-200 dark:bg-slate-850 text-slate-750 dark:text-slate-350 text-[9px] px-1.5 py-0.2 rounded-full font-bold leading-none">
+                          {activeLedger.length}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setCashLedgerSubTab('trash')}
+                        className={`px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                          cashLedgerSubTab === 'trash'
+                            ? 'bg-rose-600 text-white shadow-xs'
+                            : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        <Trash2 size={11} />
+                        <span>{language === 'bn' ? 'রিসাইকেল বিন' : 'Recycle Bin'}</span>
+                        {deletedLedger.length > 0 && (
+                          <span className="bg-white text-rose-600 text-[9px] px-1.5 py-0.2 rounded-full font-black leading-none border border-rose-200">
+                            {deletedLedger.length}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {((cashLedgerSubTab === 'active' ? activeLedger : deletedLedger).length === 0) ? (
+                  <div className="text-center py-12 text-slate-300 font-bold uppercase text-[10px] bg-white dark:bg-slate-900 rounded-lg border border-slate-100 dark:border-slate-800">
+                    {cashLedgerSubTab === 'active' ? (
+                      language === 'bn' ? 'কোনো সক্রিয় লেনদেন রেকর্ড পাওয়া যায়নি!' : 'No active transactions recorded yet!'
+                    ) : (
+                      language === 'bn' ? 'রিসাইকেল বিন খালি!' : 'Recycle Bin is empty!'
+                    )}
                   </div>
                 ) : (
                   <div className="border border-slate-100 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900">
                     {/* Mobile Ledger List View */}
                     <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800">
-                      {cashLedger.map((entry) => (
+                      {(cashLedgerSubTab === 'active' ? activeLedger : deletedLedger).map((entry) => (
                         <div key={entry.id} className="p-4 space-y-2 hover:bg-slate-50/50">
                           <div className="flex items-center justify-between">
                             <span className="text-[9px] font-bold text-slate-400">
@@ -2687,6 +2983,59 @@ function HomeSection({
                             <span>Amount: <strong className={entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'}>৳{entry.amount.toFixed(2)}</strong></span>
                             <span>Balance After: <strong className="text-slate-700 dark:text-slate-300">৳{entry.balanceAfter.toFixed(2)}</strong></span>
                           </div>
+                          
+                          {/* Actions Panel for Mobile */}
+                          {userRole === 'admin' && (
+                            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/65">
+                              {cashLedgerSubTab === 'active' ? (
+                                <>
+                                  <button
+                                    onClick={() => setEditingLedger(entry)}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/20 px-2 py-1 rounded transition-all cursor-pointer"
+                                  >
+                                    <Edit size={11} />
+                                    <span>{language === 'bn' ? 'সম্পাদনা' : 'Edit'}</span>
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (onDeleteLedger) {
+                                        onDeleteLedger(entry.id);
+                                      }
+                                    }}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 px-2 py-1 rounded transition-all cursor-pointer"
+                                  >
+                                    <Trash2 size={11} />
+                                    <span>{language === 'bn' ? 'মুছে ফেলুন' : 'Delete'}</span>
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      if (onRestoreLedger) {
+                                        onRestoreLedger(entry.id);
+                                      }
+                                    }}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 px-2 py-1 rounded transition-all cursor-pointer"
+                                  >
+                                    <RotateCcw size={11} />
+                                    <span>{language === 'bn' ? 'পুনরুদ্ধার' : 'Restore'}</span>
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (onPermDeleteLedger) {
+                                        onPermDeleteLedger(entry.id);
+                                      }
+                                    }}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 px-2 py-1 rounded transition-all cursor-pointer"
+                                  >
+                                    <Trash2 size={11} />
+                                    <span>{language === 'bn' ? 'স্থায়ীভাবে মুছুন' : 'Delete Permanently'}</span>
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -2702,10 +3051,11 @@ function HomeSection({
                             <th className="px-4 py-3 text-right">Balance After</th>
                             <th className="px-4 py-3">Description</th>
                             <th className="px-4 py-3">Initiated By</th>
+                            {userRole === 'admin' && <th className="px-4 py-3 text-center">Actions</th>}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                          {cashLedger.map((entry) => (
+                          {(cashLedgerSubTab === 'active' ? activeLedger : deletedLedger).map((entry) => (
                             <tr key={entry.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
                               <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
                                 {new Date(entry.timestamp).toLocaleString(language === 'bn' ? 'bn-BD' : 'en-US')}
@@ -2733,6 +3083,57 @@ function HomeSection({
                               <td className="px-4 py-3 font-medium text-slate-500 whitespace-nowrap">
                                 {entry.createdBy}
                               </td>
+                              {userRole === 'admin' && (
+                                <td className="px-4 py-3 text-center whitespace-nowrap">
+                                  {cashLedgerSubTab === 'active' ? (
+                                    <div className="flex items-center justify-center gap-1.5">
+                                      <button 
+                                        onClick={() => setEditingLedger(entry)}
+                                        className="text-slate-400 hover:text-blue-600 p-1 rounded hover:bg-slate-100/80 dark:hover:bg-slate-800 transition-all cursor-pointer"
+                                        title={language === 'bn' ? 'সম্পাদনা করুন' : 'Edit transaction'}
+                                      >
+                                        <Edit size={13} />
+                                      </button>
+                                      <button 
+                                        onClick={() => {
+                                          if (onDeleteLedger) {
+                                            onDeleteLedger(entry.id);
+                                          }
+                                        }}
+                                        className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50/80 dark:hover:bg-slate-800 transition-all cursor-pointer"
+                                        title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete transaction'}
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-center gap-1.5">
+                                      <button 
+                                        onClick={() => {
+                                          if (onRestoreLedger) {
+                                            onRestoreLedger(entry.id);
+                                          }
+                                        }}
+                                        className="text-slate-400 hover:text-emerald-600 p-1 rounded hover:bg-slate-100/80 dark:hover:bg-slate-800 transition-all cursor-pointer"
+                                        title={language === 'bn' ? 'পুনরুদ্ধার করুন' : 'Restore transaction'}
+                                      >
+                                        <RotateCcw size={13} />
+                                      </button>
+                                      <button 
+                                        onClick={() => {
+                                          if (onPermDeleteLedger) {
+                                            onPermDeleteLedger(entry.id);
+                                          }
+                                        }}
+                                        className="text-red-400 hover:text-rose-600 p-1 rounded hover:bg-red-50/80 dark:hover:bg-slate-800 transition-all cursor-pointer"
+                                        title={language === 'bn' ? 'স্থায়ীভাবে মুছুন' : 'Delete permanently'}
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    </div>
+                                  )}
+                                </td>
+                              )}
                             </tr>
                           ))}
                         </tbody>
@@ -2922,6 +3323,79 @@ function HomeSection({
                 className="px-5 py-2 bg-yellow-400 text-black font-black uppercase text-[10px] tracking-wider rounded shadow hover:bg-yellow-500 transition-all active:scale-95"
               >
                 {language === 'bn' ? 'সেভ করুন' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ledger Entry Edit Modal Overlay for Admins */}
+      {editingLedger && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs font-sans">
+          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 max-w-sm w-full overflow-hidden">
+            <div className="bg-emerald-600 p-4 font-black flex justify-between items-center text-white">
+              <span className="text-xs uppercase tracking-wider">
+                {language === 'bn' ? 'লেনদেন সংশোধন (অ্যাডমিন)' : 'Edit Transaction (Admin)'}
+              </span>
+              <button 
+                onClick={() => setEditingLedger(null)} 
+                className="hover:bg-black/10 w-7 h-7 rounded-full flex items-center justify-center text-sm"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="p-5 space-y-4 text-left">
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'পূর্বের টাকার পরিমাণ' : 'Original Amount'}
+                </label>
+                <div className="w-full h-10 px-3 flex items-center bg-slate-100 dark:bg-slate-950/60 rounded text-xs font-bold text-slate-500 border border-slate-100 dark:border-slate-850">
+                  ৳{(editingLedger.amount || 0).toLocaleString()}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                  {language === 'bn' ? 'নতুন টাকার পরিমাণ (৳)' : 'New Amount (৳)'}
+                </label>
+                <input 
+                  type="number" 
+                  defaultValue={editingLedger.amount || ''}
+                  id="edit-ledger-amount-input"
+                  className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-emerald-500 text-slate-900 dark:text-white"
+                  placeholder="e.g. 50000"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2">
+              <button 
+                type="button" 
+                onClick={() => setEditingLedger(null)} 
+                className="px-4.5 py-2 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 rounded text-xs font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition-all active:scale-95"
+              >
+                {language === 'bn' ? 'বাতিল' : 'Cancel'}
+              </button>
+              <button 
+                type="button" 
+                onClick={async () => {
+                  const inputEl = document.getElementById('edit-ledger-amount-input') as HTMLInputElement;
+                  const newAmount = parseFloat(inputEl?.value || '0');
+                  if (isNaN(newAmount) || newAmount <= 0) {
+                    alert(language === 'bn' ? 'অনুগ্রহ করে সঠিক টাকার পরিমাণ লিখুন!' : 'Please enter a valid positive amount!');
+                    return;
+                  }
+                  if (onEditLedger) {
+                    const success = await onEditLedger(editingLedger.id, newAmount);
+                    if (success) {
+                      setEditingLedger(null);
+                    }
+                  }
+                }} 
+                className="px-5 py-2 bg-emerald-600 text-white font-black uppercase text-[10px] tracking-wider rounded shadow hover:bg-emerald-700 transition-all active:scale-95"
+              >
+                {language === 'bn' ? 'আপডেট করুন' : 'Update'}
               </button>
             </div>
           </div>
@@ -3158,9 +3632,10 @@ interface CalculatorProps {
   receiptVisibility: ReceiptVisibility;
   copyConfig: CopyConfig;
   cashBoxBalance: number;
+  setConfirmDialog?: React.Dispatch<React.SetStateAction<any>>;
 }
 
-function CalculatorSection({ onSave, expectedNextChallan, language, t, calculations, receiptVisibility, copyConfig, cashBoxBalance }: CalculatorProps) {
+function CalculatorSection({ onSave, expectedNextChallan, language, t, calculations, receiptVisibility, copyConfig, cashBoxBalance, setConfirmDialog }: CalculatorProps) {
   const [formData, setFormData] = useState({
     sellerName: '',
     totalKg: '',
@@ -3357,55 +3832,66 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       c.totalKg === calculated.totalKg
     );
 
-    if (isDuplicate) {
-      const promptText = language === 'bn' 
-        ? `একই নাম এবং ওজনের একটি হিসাব আজ ইতিমধ্যে সেভ করা হয়েছে। আপনি কি নিশ্চিত?` 
-        : `An entry with the same name and weight has already been saved today. Are you sure?`;
-      
-      if (!confirm(promptText)) {
-        return;
+    const performSave = async () => {
+      // Save to DB!
+      const savedChallanNo = await onSave({
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: Date.now(),
+        sellerName: calculated.sellerName,
+        totalKg: calculated.totalKg,
+        ratePerMon: calculated.ratePerMon,
+        monType: calculated.monType,
+        totalMon: calculated.totalMonDecimal,
+        totalPrice: calculated.price,
+        challanNo: calculated.challanNo
+      });
+
+      if (savedChallanNo === false) {
+        return; // Stop execution on failure
       }
-    }
 
-    // Save to DB!
-    const savedChallanNo = await onSave({
-      id: Math.random().toString(36).substr(2, 9),
-      timestamp: Date.now(),
-      sellerName: calculated.sellerName,
-      totalKg: calculated.totalKg,
-      ratePerMon: calculated.ratePerMon,
-      monType: calculated.monType,
-      totalMon: calculated.totalMonDecimal,
-      totalPrice: calculated.price,
-      challanNo: calculated.challanNo
-    });
+      const finalizedResult = {
+        ...calculated,
+        challanNo: savedChallanNo
+      };
 
-    if (savedChallanNo === false) {
-      return; // Stop execution on failure
-    }
+      setPreviewResult(finalizedResult);
+      setIsSaved(true);
 
-    const finalizedResult = {
-      ...calculated,
-      challanNo: savedChallanNo
+      const successMsg = language === 'bn' 
+        ? 'হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
+        : 'Calculation finalized and successfully saved to database!';
+      alert(successMsg);
+
+      // Increment challan for next row & reset form
+      setFormData({
+        sellerName: '',
+        totalKg: '',
+        ratePerMon: '',
+        monType: formData.monType,
+        challanNo: (savedChallanNo + 1).toString()
+      });
+      setAllowSerialBypass(false);
     };
 
-    setPreviewResult(finalizedResult);
-    setIsSaved(true);
-
-    const successMsg = language === 'bn' 
-      ? 'হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
-      : 'Calculation finalized and successfully saved to database!';
-    alert(successMsg);
-
-    // Increment challan for next row & reset form
-    setFormData({
-      sellerName: '',
-      totalKg: '',
-      ratePerMon: '',
-      monType: formData.monType,
-      challanNo: (savedChallanNo + 1).toString()
-    });
-    setAllowSerialBypass(false);
+    if (isDuplicate && setConfirmDialog) {
+      setConfirmDialog({
+        isOpen: true,
+        title: language === 'bn' ? 'ডুপ্লিকেট হিসাবের নিশ্চিতকরণ' : 'Confirm Duplicate Entry',
+        message: language === 'bn' 
+          ? `একই নাম এবং ওজনের একটি হিসাব আজ ইতিমধ্যে সেভ করা হয়েছে। আপনি কি নিশ্চিত?` 
+          : `An entry with the same name and weight has already been saved today. Are you sure?`,
+        confirmText: language === 'bn' ? 'হ্যাঁ, সেভ করুন' : 'Yes, Save',
+        cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+        isDanger: false,
+        onConfirm: async () => {
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          await performSave();
+        }
+      });
+    } else {
+      await performSave();
+    }
   };
 
   const handleClear = () => {
@@ -3487,16 +3973,6 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       c.totalKg === parseFloat(minusFormData.totalKg)
     );
 
-    if (isDuplicate) {
-      const promptText = language === 'bn' 
-        ? `একই নাম এবং ওজনের একটি হিসাব আজ ইতিমধ্যে সেভ করা হয়েছে। আপনি কি নিশ্চিত?` 
-        : `An entry with the same name and weight has already been saved today. Are you sure?`;
-      
-      if (!confirm(promptText)) {
-        return;
-      }
-    }
-
     const calculated = {
       sellerName: minusFormData.sellerName,
       totalKg: parseFloat(minusFormData.totalKg),
@@ -3523,51 +3999,72 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       return;
     }
 
-    // Save to DB!
-    const savedChallanNo = await onSave({
-      id: Math.random().toString(36).substr(2, 9),
-      timestamp: Date.now(),
-      sellerName: calculated.sellerName,
-      totalKg: calculated.totalKg,
-      ratePerMon: calculated.ratePerMon,
-      monType: calculated.monType,
-      totalMon: calculated.totalMonDecimal,
-      totalPrice: calculated.price,
-      challanNo: calculated.challanNo,
-      deductedWeight: calculated.deductedWeight,
-      deductionPercentage: calculated.deductionPercentage,
-      isMinusCalculated: true,
-      targetMonPrice: calculated.targetMonPrice
-    });
+    const performMinusSave = async () => {
+      // Save to DB!
+      const savedChallanNo = await onSave({
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: Date.now(),
+        sellerName: calculated.sellerName,
+        totalKg: calculated.totalKg,
+        ratePerMon: calculated.ratePerMon,
+        monType: calculated.monType,
+        totalMon: calculated.totalMonDecimal,
+        totalPrice: calculated.price,
+        challanNo: calculated.challanNo,
+        deductedWeight: calculated.deductedWeight,
+        deductionPercentage: calculated.deductionPercentage,
+        isMinusCalculated: true,
+        targetMonPrice: calculated.targetMonPrice
+      });
 
-    if (savedChallanNo === false) {
-      return; // Stop execution on failure
-    }
+      if (savedChallanNo === false) {
+        return; // Stop execution on failure
+      }
 
-    const finalizedResult = {
-      ...calculated,
-      challanNo: savedChallanNo
+      const finalizedResult = {
+        ...calculated,
+        challanNo: savedChallanNo
+      };
+
+      setPreviewResult(finalizedResult);
+      setIsSaved(true);
+
+      const successMsg = language === 'bn' 
+        ? 'মাইনাস হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
+        : 'Minus calculation finalized and successfully saved to database!';
+      alert(successMsg);
+
+      // Increment challan for next row & reset form
+      setMinusFormData({
+        sellerName: '',
+        totalKg: '',
+        minusWeight: '',
+        targetMonPrice: '',
+        monType: minusFormData.monType,
+        ratePerMon: '',
+        challanNo: (savedChallanNo + 1).toString(),
+        activeInput: 'weight'
+      });
     };
 
-    setPreviewResult(finalizedResult);
-    setIsSaved(true);
-
-    const successMsg = language === 'bn' 
-      ? 'মাইনাস হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
-      : 'Minus calculation finalized and successfully saved to database!';
-    alert(successMsg);
-
-    // Increment challan for next row & reset form
-    setMinusFormData({
-      sellerName: '',
-      totalKg: '',
-      minusWeight: '',
-      targetMonPrice: '',
-      monType: minusFormData.monType,
-      ratePerMon: '',
-      challanNo: (savedChallanNo + 1).toString(),
-      activeInput: 'weight'
-    });
+    if (isDuplicate && setConfirmDialog) {
+      setConfirmDialog({
+        isOpen: true,
+        title: language === 'bn' ? 'ডুপ্লিকেট হিসাবের নিশ্চিতকরণ' : 'Confirm Duplicate Entry',
+        message: language === 'bn' 
+          ? `একই নাম এবং ওজনের একটি হিসাব আজ ইতিমধ্যে সেভ করা হয়েছে। আপনি কি নিশ্চিত?` 
+          : `An entry with the same name and weight has already been saved today. Are you sure?`,
+        confirmText: language === 'bn' ? 'হ্যাঁ, সেভ করুন' : 'Yes, Save',
+        cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+        isDanger: false,
+        onConfirm: async () => {
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          await performMinusSave();
+        }
+      });
+    } else {
+      await performMinusSave();
+    }
   };
 
   const handleCopy = () => {
