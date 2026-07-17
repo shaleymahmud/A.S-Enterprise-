@@ -3178,11 +3178,11 @@ function HomeSection({
               </div>
 
               {/* Desktop Table View */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="bg-slate-50 dark:bg-slate-950 text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">
-                      <th className="px-4 py-3 w-10">
+              <div className="hidden md:block overflow-x-auto overflow-y-auto max-h-[500px] border border-slate-100 dark:border-slate-800 rounded-lg">
+                <table className="w-full text-left border-collapse">
+                  <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-950 border-b border-slate-150 dark:border-slate-800">
+                    <tr className="bg-slate-50 dark:bg-slate-950 text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                      <th className="px-4 py-3 w-10 bg-slate-50 dark:bg-slate-950">
                         <input 
                           type="checkbox"
                           checked={(activeSubTab === 'active' ? filteredList : filteredDeletedList).length > 0 && selectedCalcIds.length === (activeSubTab === 'active' ? filteredList : filteredDeletedList).length}
@@ -3197,15 +3197,15 @@ function HomeSection({
                           className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
                         />
                       </th>
-                      <th className="px-4 py-3">Date</th>
-                      <th className="px-4 py-3">Challan</th>
-                      <th className="px-3 py-3">Seller</th>
-                      <th className="px-3 py-3">Weight (KG)</th>
-                      <th className="px-3 py-3">Mon</th>
-                      <th className="px-3 py-3">Rate</th>
-                      <th className="px-4 py-3">Total</th>
-                      <th className="px-3 py-3">{activeSubTab === 'active' ? 'Operator' : 'Deleted By'}</th>
-                      <th className="px-4 py-3">Actions</th>
+                      <th className="px-4 py-3 bg-slate-50 dark:bg-slate-950">Date</th>
+                      <th className="px-4 py-3 bg-slate-50 dark:bg-slate-950">Challan</th>
+                      <th className="px-3 py-3 bg-slate-50 dark:bg-slate-950">Seller</th>
+                      <th className="px-3 py-3 bg-slate-50 dark:bg-slate-950">Weight (KG)</th>
+                      <th className="px-3 py-3 bg-slate-50 dark:bg-slate-950">Mon</th>
+                      <th className="px-3 py-3 bg-slate-50 dark:bg-slate-950">Rate</th>
+                      <th className="px-4 py-3 bg-slate-50 dark:bg-slate-950">Total</th>
+                      <th className="px-3 py-3 bg-slate-50 dark:bg-slate-950">{activeSubTab === 'active' ? 'Operator' : 'Deleted By'}</th>
+                      <th className="px-4 py-3 bg-slate-50 dark:bg-slate-950">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -3823,6 +3823,57 @@ function HomeSection({
                   <option value={42}>42 KG</option>
                   <option value={43}>43 KG</option>
                 </select>
+              </div>
+
+              {/* Date & Time Editing for Admin */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'তারিখ' : 'Date'}
+                  </label>
+                  <input 
+                    type="date" 
+                    value={(() => {
+                      const d = new Date(editingCalc.timestamp);
+                      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                    })()}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val) {
+                        const d = new Date(editingCalc.timestamp);
+                        const [yr, mo, dy] = val.split('-').map(Number);
+                        d.setFullYear(yr);
+                        d.setMonth(mo - 1);
+                        d.setDate(dy);
+                        setEditingCalc({ ...editingCalc, timestamp: d.getTime() });
+                      }
+                    }}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'সময়' : 'Time'}
+                  </label>
+                  <input 
+                    type="time" 
+                    value={(() => {
+                      const d = new Date(editingCalc.timestamp);
+                      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+                    })()}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val) {
+                        const d = new Date(editingCalc.timestamp);
+                        const [hr, mn] = val.split(':').map(Number);
+                        d.setHours(hr);
+                        d.setMinutes(mn);
+                        setEditingCalc({ ...editingCalc, timestamp: d.getTime() });
+                      }
+                    }}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white cursor-pointer"
+                  />
+                </div>
               </div>
 
               {editingCalc.isMinusCalculated && (
@@ -6300,6 +6351,57 @@ function HistorySection({
                   <option value={42}>42 KG</option>
                   <option value={43}>43 KG</option>
                 </select>
+              </div>
+
+              {/* Date & Time Editing for Admin */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'তারিখ' : 'Date'}
+                  </label>
+                  <input 
+                    type="date" 
+                    value={(() => {
+                      const d = new Date(editingCalc.timestamp);
+                      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                    })()}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val) {
+                        const d = new Date(editingCalc.timestamp);
+                        const [yr, mo, dy] = val.split('-').map(Number);
+                        d.setFullYear(yr);
+                        d.setMonth(mo - 1);
+                        d.setDate(dy);
+                        setEditingCalc({ ...editingCalc, timestamp: d.getTime() });
+                      }
+                    }}
+                    className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 cursor-pointer text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'সময়' : 'Time'}
+                  </label>
+                  <input 
+                    type="time" 
+                    value={(() => {
+                      const d = new Date(editingCalc.timestamp);
+                      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+                    })()}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val) {
+                        const d = new Date(editingCalc.timestamp);
+                        const [hr, mn] = val.split(':').map(Number);
+                        d.setHours(hr);
+                        d.setMinutes(mn);
+                        setEditingCalc({ ...editingCalc, timestamp: d.getTime() });
+                      }
+                    }}
+                    className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 cursor-pointer text-slate-900"
+                  />
+                </div>
               </div>
 
               {editingCalc.isMinusCalculated && (
