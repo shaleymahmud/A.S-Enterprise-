@@ -93,6 +93,7 @@ interface Calculation {
   isMinusCalculated?: boolean;
   targetMonPrice?: number;
   getEntryNo?: number;
+  gateEntry?: number;
   isDeleted?: boolean;
   deletedBy?: string;
   deletedAt?: number;
@@ -1502,7 +1503,12 @@ export default function App() {
   const editCalculation = async (updated: Calculation) => {
     try {
       const { id, ...dataToUpdate } = updated;
-      const cleanedData = cleanUndefined(dataToUpdate);
+      const gateEntryVal = updated.getEntryNo;
+      const cleanedData = cleanUndefined({
+        ...dataToUpdate,
+        getEntryNo: gateEntryVal,
+        gateEntry: gateEntryVal
+      });
       
       // Fetch the old record for Audit logging
       const docRef = doc(db, 'calculations', id);
@@ -3760,16 +3766,29 @@ function HomeSection({
             </div>
             
             <div className="p-5 space-y-4 text-left">
-              <div>
-                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
-                  {language === 'bn' ? 'চালান নম্বর' : 'Challan No'}
-                </label>
-                <input 
-                  type="number" 
-                  value={editingCalc.challanNo !== undefined ? editingCalc.challanNo : ''}
-                  onChange={e => setEditingCalc({ ...editingCalc, challanNo: parseInt(e.target.value) || 0 })}
-                  className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'চালান নম্বর' : 'Challan No'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.challanNo !== undefined ? editingCalc.challanNo : ''}
+                    onChange={e => setEditingCalc({ ...editingCalc, challanNo: parseInt(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry No'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.getEntryNo !== undefined ? editingCalc.getEntryNo : ''}
+                    onChange={e => setEditingCalc({ ...editingCalc, getEntryNo: parseInt(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
+                  />
+                </div>
               </div>
 
               <div>
@@ -4677,7 +4696,8 @@ function CalculatorSection({
         totalMon: calculated.totalMonDecimal,
         totalPrice: calculated.price,
         challanNo: finalChallan,
-        getEntryNo: finalGate
+        getEntryNo: finalGate,
+        gateEntry: finalGate
       });
 
       if (savedChallanNo === false) {
@@ -4882,6 +4902,7 @@ function CalculatorSection({
         totalPrice: calculated.price,
         challanNo: finalChallan,
         getEntryNo: finalGate,
+        gateEntry: finalGate,
         deductedWeight: calculated.deductedWeight,
         deductionPercentage: calculated.deductionPercentage,
         isMinusCalculated: true,
@@ -6288,16 +6309,29 @@ function HistorySection({
             </div>
             
             <div className="p-5 space-y-4 text-left">
-              <div>
-                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
-                  {language === 'bn' ? 'চালান নম্বর' : 'Challan No'}
-                </label>
-                <input 
-                  type="number" 
-                  value={editingCalc.challanNo !== undefined ? editingCalc.challanNo : ''}
-                  onChange={e => setEditingCalc({ ...editingCalc, challanNo: parseInt(e.target.value) || 0 })}
-                  className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'চালান নম্বর' : 'Challan No'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.challanNo !== undefined ? editingCalc.challanNo : ''}
+                    onChange={e => setEditingCalc({ ...editingCalc, challanNo: parseInt(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
+                    {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry No'}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={editingCalc.getEntryNo !== undefined ? editingCalc.getEntryNo : ''}
+                    onChange={e => setEditingCalc({ ...editingCalc, getEntryNo: parseInt(e.target.value) || 0 })}
+                    className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
+                  />
+                </div>
               </div>
 
               <div>
