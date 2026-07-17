@@ -79,6 +79,34 @@
         "createdBy": { "type": "string" }
       },
       "required": ["id", "timestamp", "type", "amount", "balanceAfter", "description", "createdBy"]
+    },
+    "Note": {
+      "title": "Memorandum Note",
+      "description": "User notes and logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "title", "content", "createdBy"]
+    },
+    "AuditLog": {
+      "title": "Action Audit Log",
+      "description": "Logs of edits and renumber actions for security compliance",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "actionType": { "type": "string", "enum": ["Edit", "Renumber"] },
+        "actionBy": { "type": "string" },
+        "oldRecordDetails": { "type": "string" },
+        "newRecordDetails": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "actionType", "actionBy", "oldRecordDetails", "newRecordDetails"]
     }
   },
   "firestore": {
@@ -101,6 +129,14 @@
     "/cash_ledger/{ledgerId}": {
       "schema": "CashLedgerEntry",
       "description": "Stores audit logs of credit/debit cash operations"
+    },
+    "/notes/{noteId}": {
+      "schema": "Note",
+      "description": "Stores memorandum notes written by users"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Stores action audit logs for edits and renumbers"
     }
   }
 }

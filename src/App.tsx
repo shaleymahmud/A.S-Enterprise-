@@ -34,7 +34,7 @@ import AssistantSection from './components/AssistantSection';
 import BillingSection from './components/BillingSection';
 import ExpensesSection from './components/ExpensesSection';
 import LoginScreen from './components/LoginScreen';
-import { toJpeg } from 'html-to-image';
+import { toJpeg, toPng } from 'html-to-image';
 import { auth, db } from './firebase';
 import { 
   onAuthStateChanged, 
@@ -52,7 +52,9 @@ import {
   query, 
   orderBy, 
   onSnapshot,
-  runTransaction
+  runTransaction,
+  getDocs,
+  writeBatch
 } from 'firebase/firestore';
 
 // Helper to strip undefined values so Firestore doesn't crash on saving/updating
@@ -85,6 +87,7 @@ interface Calculation {
   totalPrice: number;
   challanNo: number;
   createdBy: string;
+  createdByName?: string;
   deductedWeight?: number;
   deductionPercentage?: number;
   isMinusCalculated?: boolean;
@@ -109,6 +112,8 @@ interface Note {
   timestamp: number;
   title: string;
   content: string;
+  createdBy?: string;
+  createdByName?: string;
 }
 
 type Tab = 'home' | 'calculator' | 'history' | 'expenses' | 'note' | 'assistant' | 'settings' | 'billing';
@@ -484,6 +489,15 @@ export default function App() {
       snapshot.forEach((docSnap) => {
         list.push({ ...docSnap.data(), id: docSnap.id } as Calculation);
       });
+      
+      // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
+      list.sort((a, b) => {
+        if (b.timestamp !== a.timestamp) {
+          return b.timestamp - a.timestamp;
+        }
+        return (a.challanNo || 0) - (b.challanNo || 0);
+      });
+
       const sorted = recalculateDailySequences(list);
       setCalculations(sorted);
 
@@ -588,16 +602,35 @@ export default function App() {
     return () => unsubscribe();
   }, [firebaseUser]);
 
+  // Subscribe to notes collection in Firestore in real-time
+  useEffect(() => {
+    if (!firebaseUser) {
+      setNotes([]);
+      return;
+    }
+
+    const q = query(collection(db, 'notes'), orderBy('timestamp', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list: Note[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ ...docSnap.data(), id: docSnap.id } as Note);
+      });
+      setNotes(list);
+    }, (error) => {
+      console.error("Firestore notes sub error: ", error);
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser]);
+
   // Load Persisted Data
   useEffect(() => {
-    const savedNotes = localStorage.getItem('as_enterprise_notes');
     const savedChallan = localStorage.getItem('as_enterprise_default_challan');
     const savedLang = localStorage.getItem('as_enterprise_lang');
     const savedVisibility = localStorage.getItem('as_enterprise_receipt_visibility');
     const savedCopyConfig = localStorage.getItem('as_enterprise_copy_config');
     const savedTheme = localStorage.getItem('as_enterprise_theme');
 
-    if (savedNotes) setNotes(JSON.parse(savedNotes));
     if (savedChallan) setDefaultChallan(parseInt(savedChallan) || 601);
     if (savedLang) setLanguage(savedLang as 'bn' | 'en');
     if (savedVisibility) setReceiptVisibility(JSON.parse(savedVisibility));
@@ -623,10 +656,6 @@ export default function App() {
       localStorage.setItem('as_enterprise_theme', 'light');
     }
   };
-
-  useEffect(() => {
-    localStorage.setItem('as_enterprise_notes', JSON.stringify(notes));
-  }, [notes]);
 
   const expectedNextChallan = useMemo(() => {
     if (masterChallanNo !== null && masterChallanNo !== undefined) {
@@ -679,12 +708,14 @@ export default function App() {
 
         const nextBalance = parseFloat((currentBalance - deductAmount).toFixed(2));
         
-        // Dynamically increment or initialize currentChallanNo
+        // If a custom challanNo was explicitly sent (e.g. overridden or backdated), use it.
+        // Otherwise, dynamically increment from the master counter.
         let assigned = expectedNextChallan;
-        if (masterCounterSnap.exists() && masterCounterSnap.data().currentChallanNo !== undefined) {
+        if (newCalc.challanNo !== undefined) {
+          assigned = newCalc.challanNo;
+        } else if (masterCounterSnap.exists() && masterCounterSnap.data().currentChallanNo !== undefined) {
           assigned = (masterCounterSnap.data().currentChallanNo || 0) + 1;
         } else {
-          // If not initialized, fallback to current expected next
           assigned = expectedNextChallan;
         }
         assignedChallanNo = assigned;
@@ -698,9 +729,15 @@ export default function App() {
           lastUpdatedBy: currentUserEmail || currentUser || 'Guest'
         }, { merge: true });
 
-        // 2. Update the master counter document
+        // 2. Update the master counter document to the maximum of current and newly saved challan
+        let currentMC = 0;
+        if (masterCounterSnap.exists() && masterCounterSnap.data().currentChallanNo !== undefined) {
+          currentMC = masterCounterSnap.data().currentChallanNo || 0;
+        }
+        const nextMC = Math.max(currentMC, assignedChallanNo);
+
         transaction.set(masterCounterDocRef, {
-          currentChallanNo: assignedChallanNo,
+          currentChallanNo: nextMC,
           lastUpdated: Date.now(),
           lastUpdatedBy: currentUserEmail || currentUser || 'Guest'
         }, { merge: true });
@@ -719,7 +756,7 @@ export default function App() {
         const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
         transaction.set(ledgerDocRef, {
           id: ledgerId,
-          timestamp: Date.now(),
+          timestamp: newCalc.timestamp || Date.now(),
           type: 'debit',
           amount: deductAmount,
           balanceAfter: nextBalance,
@@ -743,6 +780,248 @@ export default function App() {
         alert(language === 'bn' ? 'ডাটাবেজে সেভ করতে ত্রুটি হয়েছে!' : 'Error saving to database: ' + err.message);
       }
       return false;
+    }
+  };
+
+  const bulkDeleteCalculations = async (ids: string[], onSuccess?: () => void) => {
+    if (ids.length === 0) return;
+    setConfirmDialog({
+      isOpen: true,
+      title: language === 'bn' ? 'একত্রে মুছে ফেলার নিশ্চিতকরণ' : 'Confirm Bulk Deletion',
+      message: language === 'bn' 
+        ? `আপনি কি নির্বাচিত ${ids.length} টি হিসাবের রেকর্ড মুছে ফেলতে চান (সবগুলো ট্র্যাশ বক্সে যাবে এবং ব্যালেন্স রিফান্ড হবে)?` 
+        : `Are you sure you want to delete the selected ${ids.length} records (they will move to Trash Box and balances will be refunded)?`,
+      confirmText: language === 'bn' ? 'হ্যাঁ, ডিলিট করুন' : 'Yes, Delete All',
+      cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          const deletedByVal = currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest');
+          const deletedByNameVal = currentUser || 'Operator';
+          
+          for (const id of ids) {
+            await runTransaction(db, async (transaction) => {
+              const calcDocRef = doc(db, 'calculations', id);
+              const calcSnap = await transaction.get(calcDocRef);
+              if (!calcSnap.exists()) return;
+              
+              const calcData = calcSnap.data() as Calculation;
+              
+              const cashboxDocRef = doc(db, 'settings', 'cashbox');
+              const cashboxSnap = await transaction.get(cashboxDocRef);
+              
+              const masterCounterDocRef = doc(db, 'settings', 'master_counters');
+              const masterCounterSnap = await transaction.get(masterCounterDocRef);
+              
+              transaction.update(calcDocRef, {
+                isDeleted: true,
+                deletedBy: deletedByVal,
+                deletedAt: Date.now()
+              });
+              
+              if (!calcData.isDeleted) {
+                const refundAmount = parseFloat((calcData.totalPrice || 0).toFixed(2));
+                let currentBalance = 0;
+                if (cashboxSnap.exists()) {
+                  currentBalance = cashboxSnap.data().balance || 0;
+                }
+                const nextBalance = parseFloat((currentBalance + refundAmount).toFixed(2));
+                
+                transaction.set(cashboxDocRef, {
+                  balance: nextBalance,
+                  lastUpdated: Date.now(),
+                  lastUpdatedBy: deletedByVal
+                }, { merge: true });
+                
+                const ledgerId = Math.random().toString(36).substr(2, 9);
+                const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
+                transaction.set(ledgerDocRef, {
+                  id: ledgerId,
+                  timestamp: Date.now(),
+                  type: 'credit',
+                  amount: refundAmount,
+                  balanceAfter: nextBalance,
+                  description: language === 'bn'
+                    ? `চালান নং #${calcData.challanNo} একত্রে ডিলিট (রিফান্ড) - ডিলিট করেছেন: ${deletedByNameVal}`
+                    : `Challan #${calcData.challanNo} Bulk Deleted (Refunded) - Deleted by: ${deletedByNameVal}`,
+                  challanNo: calcData.challanNo,
+                  operatorName: deletedByNameVal,
+                  createdBy: deletedByVal
+                });
+                
+                if (masterCounterSnap.exists() && masterCounterSnap.data().currentChallanNo === calcData.challanNo) {
+                  const prevChallanNo = Math.max(0, calcData.challanNo - 1);
+                  transaction.update(masterCounterDocRef, {
+                    currentChallanNo: prevChallanNo,
+                    lastUpdated: Date.now(),
+                    lastUpdatedBy: deletedByVal
+                  });
+                }
+              }
+            });
+          }
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          alert(language === 'bn' ? 'নির্বাচিত রেকর্ডসমূহ সফলভাবে ডিলিট করা হয়েছে!' : 'Selected records deleted successfully!');
+          if (onSuccess) onSuccess();
+        } catch (err: any) {
+          console.error("Error bulk deleting: ", err);
+          alert(language === 'bn' ? 'রেকর্ডগুলো ডিলিট করতে সমস্যা হয়েছে!' : 'Error deleting selected records: ' + err.message);
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+        }
+      }
+    });
+  };
+
+  const bulkPermanentDeleteCalculations = async (ids: string[], onSuccess?: () => void) => {
+    if (ids.length === 0) return;
+    setConfirmDialog({
+      isOpen: true,
+      title: language === 'bn' ? 'চিরতরে মুছে ফেলার নিশ্চিতকরণ' : 'Confirm Permanent Deletion',
+      message: language === 'bn' 
+        ? `আপনি কি নির্বাচিত ${ids.length} টি রেকর্ড চিরতরে ডিলিট করতে চান? এটি আর কোনোভাবেই পুনরুদ্ধার করা যাবে না!` 
+        : `Are you sure you want to PERMANENTLY delete the selected ${ids.length} records? This action is IRREVERSIBLE!`,
+      confirmText: language === 'bn' ? 'হ্যাঁ, চিরতরে মুছুন' : 'Yes, Delete Permanently',
+      cancelText: language === 'bn' ? 'বাতিল' : 'Cancel',
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          for (const id of ids) {
+            await deleteDoc(doc(db, 'calculations', id));
+          }
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          alert(language === 'bn' ? 'নির্বাচিত হিসাবসমূহ চিরতরে ডিলিট করা হয়েছে!' : 'Selected records permanently deleted successfully!');
+          if (onSuccess) onSuccess();
+        } catch (err: any) {
+          console.error("Error bulk permanently deleting docs: ", err);
+          alert(language === 'bn' ? 'চিরতরে ডিলিট করতে সমস্যা হয়েছে!' : 'Error permanently deleting records: ' + err.message);
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+        }
+      }
+    });
+  };
+
+  const bulkDeleteDrafts = async (ids: string[], onSuccess?: () => void) => {
+    if (ids.length === 0) return;
+    if (confirm(language === 'bn' ? `আপনি কি নির্বাচিত ${ids.length} টি ডামি হিসাব মুছে ফেলতে চান?` : `Are you sure you want to delete the selected ${ids.length} dummy calculations?`)) {
+      try {
+        const deletedByVal = currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest');
+        const deletedByNameVal = currentUser || 'Operator';
+        for (const id of ids) {
+          await updateDoc(doc(db, 'draft_calculations', id), { 
+            isDeleted: true,
+            deletedBy: deletedByVal,
+            deletedAt: Date.now()
+          });
+        }
+        alert(language === 'bn' ? 'নির্বাচিত ডামি হিসাবসমূহ ট্র্যাশ বক্সে পাঠানো হয়েছে!' : 'Selected dummy calculations moved to Trash Box!');
+        if (onSuccess) onSuccess();
+      } catch (err: any) {
+        console.error("Error soft deleting bulk drafts: ", err);
+        alert(language === 'bn' ? 'মুছে ফেলতে সমস্যা হয়েছে!' : 'Error deleting selected dummy entries!');
+      }
+    }
+  };
+
+  const bulkRestoreDrafts = async (ids: string[], onSuccess?: () => void) => {
+    if (ids.length === 0) return;
+    try {
+      for (const id of ids) {
+        await updateDoc(doc(db, 'draft_calculations', id), { isDeleted: false });
+      }
+      alert(language === 'bn' ? 'নির্বাচিত ডামি হিসাবসমূহ পুনরুদ্ধার করা হয়েছে!' : 'Selected dummy calculations restored successfully!');
+      if (onSuccess) onSuccess();
+    } catch (err: any) {
+      console.error("Error restoring bulk drafts: ", err);
+      alert(language === 'bn' ? 'পুনরুদ্ধার করতে সমস্যা হয়েছে!' : 'Error restoring selected dummy entries!');
+    }
+  };
+
+  const bulkPermanentDeleteDrafts = async (ids: string[], onSuccess?: () => void) => {
+    if (ids.length === 0) return;
+    if (confirm(language === 'bn' ? `আপনি কি নির্বাচিত ${ids.length} টি ডামি হিসাব চিরতরে মুছে ফেলতে চান?` : `Are you sure you want to permanently delete the selected ${ids.length} dummy calculations?`)) {
+      try {
+        for (const id of ids) {
+          await deleteDoc(doc(db, 'draft_calculations', id));
+        }
+        alert(language === 'bn' ? 'নির্বাচিত ডামি হিসাবসমূহ চিরতরে ডিলিট করা হয়েছে!' : 'Selected dummy calculations permanently deleted!');
+        if (onSuccess) onSuccess();
+      } catch (err: any) {
+        console.error("Error permanently deleting bulk drafts: ", err);
+        alert(language === 'bn' ? 'চিরতরে ডিলিট করতে সমস্যা হয়েছে!' : 'Error permanently deleting selected dummy entries!');
+      }
+    }
+  };
+
+  const bulkRestoreCalculations = async (ids: string[], onSuccess?: () => void) => {
+    if (ids.length === 0) return;
+    try {
+      for (const id of ids) {
+        await runTransaction(db, async (transaction) => {
+          const calcDocRef = doc(db, 'calculations', id);
+          const calcSnap = await transaction.get(calcDocRef);
+          if (!calcSnap.exists()) return;
+          
+          const calcData = calcSnap.data() as Calculation;
+          if (calcData.isDeleted) {
+            const deductAmount = parseFloat((calcData.totalPrice || 0).toFixed(2));
+            
+            // Read cashbox balance
+            const cashboxDocRef = doc(db, 'settings', 'cashbox');
+            const cashboxSnap = await transaction.get(cashboxDocRef);
+            
+            let currentBalance = 0;
+            if (cashboxSnap.exists()) {
+              currentBalance = cashboxSnap.data().balance || 0;
+            }
+            
+            // Refund check: if restoring, we must deduct the amount back from the cash box!
+            if (deductAmount > currentBalance) {
+              throw new Error("INSUFFICIENT_CASHBOX_BALANCE");
+            }
+            
+            const nextBalance = parseFloat((currentBalance - deductAmount).toFixed(2));
+            
+            transaction.set(cashboxDocRef, {
+              balance: nextBalance,
+              lastUpdated: Date.now(),
+              lastUpdatedBy: currentUserEmail || 'Admin'
+            }, { merge: true });
+            
+            transaction.update(calcDocRef, {
+              isDeleted: false,
+              deletedBy: "",
+              deletedAt: 0
+            });
+            
+            const ledgerId = Math.random().toString(36).substr(2, 9);
+            const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
+            transaction.set(ledgerDocRef, {
+              id: ledgerId,
+              timestamp: Date.now(),
+              type: 'debit',
+              amount: deductAmount,
+              balanceAfter: nextBalance,
+              description: language === 'bn' 
+                ? `চালান নং #${calcData.challanNo} রিস্টোর করা হয়েছে - অপারেটর: ${currentUser}`
+                : `Restored Challan #${calcData.challanNo} - Operator: ${currentUser}`,
+              challanNo: calcData.challanNo,
+              operatorName: currentUser,
+              createdBy: currentUserEmail || 'Admin'
+            });
+          }
+        });
+      }
+      alert(language === 'bn' ? 'নির্বাচিত হিসাবসমূহ রিস্টোর করা হয়েছে!' : 'Selected records restored successfully!');
+      if (onSuccess) onSuccess();
+    } catch (err: any) {
+      console.error("Error bulk restoring: ", err);
+      if (err.message === "INSUFFICIENT_CASHBOX_BALANCE") {
+        alert(language === 'bn' 
+          ? 'রিস্টোর করা যায়নি! ক্যাশ বক্সে পর্যাপ্ত ব্যালেন্স নেই।' 
+          : 'Failed to restore! Insufficient balance in the cash box.');
+      } else {
+        alert(language === 'bn' ? 'রিস্টোর করতে সমস্যা হয়েছে!' : 'Error restoring selected records: ' + err.message);
+      }
     }
   };
 
@@ -1224,7 +1503,27 @@ export default function App() {
     try {
       const { id, ...dataToUpdate } = updated;
       const cleanedData = cleanUndefined(dataToUpdate);
-      await updateDoc(doc(db, 'calculations', id), cleanedData);
+      
+      // Fetch the old record for Audit logging
+      const docRef = doc(db, 'calculations', id);
+      const oldSnap = await getDoc(docRef);
+      let oldData: any = {};
+      if (oldSnap.exists()) {
+        oldData = oldSnap.data();
+      }
+
+      await updateDoc(docRef, cleanedData);
+
+      // Save Audit Log
+      const auditLogRef = doc(collection(db, 'audit_logs'));
+      await setDoc(auditLogRef, {
+        id: auditLogRef.id,
+        timestamp: Date.now(),
+        actionType: 'Edit',
+        actionBy: currentUserEmail || currentUser || 'Guest',
+        oldRecordDetails: JSON.stringify({ id, ...oldData }),
+        newRecordDetails: JSON.stringify(updated)
+      });
     } catch (err: any) {
       console.error("Error editing doc: ", err);
       alert(language === 'bn' ? 'রেকর্ডটি এডিট করতে সমস্যা হয়েছে!' : 'Error editing record: ' + err.message);
@@ -1268,12 +1567,26 @@ export default function App() {
     });
   };
 
-  const addNote = (note: Note) => {
-    setNotes([note, ...notes]);
+  const addNote = async (note: Omit<Note, 'id'>) => {
+    try {
+      await addDoc(collection(db, 'notes'), {
+        title: note.title,
+        content: note.content,
+        timestamp: note.timestamp,
+        createdBy: note.createdBy || currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest'),
+        createdByName: note.createdByName || currentUser || 'Operator'
+      });
+    } catch (err) {
+      console.error("Error saving note to Firestore:", err);
+    }
   };
 
-  const deleteNote = (id: string) => {
-    setNotes(notes.filter(n => n.id !== id));
+  const deleteNote = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'notes', id));
+    } catch (err) {
+      console.error("Error deleting note from Firestore:", err);
+    }
   };
 
   const handleLogout = async () => {
@@ -1317,8 +1630,11 @@ export default function App() {
   }, [calculations, userRole, currentUserEmail, currentUser]);
 
   const deletedCalculations = useMemo(() => {
-    return calculations.filter(c => c.isDeleted === true);
-  }, [calculations]);
+    const isUserAdmin = userRole === 'admin';
+    const deleted = calculations.filter(c => c.isDeleted === true);
+    if (isUserAdmin) return deleted;
+    return deleted.filter(c => c.createdBy === currentUserEmail || c.createdBy === currentUser);
+  }, [calculations, userRole, currentUserEmail, currentUser]);
 
   const filteredCalculations = useMemo(() => {
     const now = Date.now();
@@ -1350,13 +1666,21 @@ export default function App() {
   }, [scopedCalculations, dateFilter, customStartDate, customEndDate]);
 
   const searchedCalculations = useMemo(() => {
-    if (!historySearchQuery.trim()) {
-      return filteredCalculations;
+    let list = filteredCalculations;
+    if (historySearchQuery.trim()) {
+      const query = historySearchQuery.toLowerCase();
+      list = filteredCalculations.filter(calc => 
+        calc.sellerName.toLowerCase().includes(query)
+      );
     }
-    const query = historySearchQuery.toLowerCase();
-    return filteredCalculations.filter(calc => 
-      calc.sellerName.toLowerCase().includes(query)
-    );
+    
+    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
+    return [...list].sort((a, b) => {
+      if (b.timestamp !== a.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      return (a.challanNo || 0) - (b.challanNo || 0);
+    });
   }, [filteredCalculations, historySearchQuery]);
 
   const stats = useMemo(() => {
@@ -1587,23 +1911,44 @@ export default function App() {
       return;
     }
     
-    // Create a temporary loading indicator if needed, but toJpeg is fast.
-    toJpeg(node, { 
-      quality: 0.95, 
+    // Set up optimized config for high-density, ultra-sharp vector rendering
+    const options = {
+      quality: 1.0,
+      pixelRatio: 4, // 4x physical scale for flawless printing & readability
       backgroundColor: '#ffffff',
-      fontEmbedCSS: '',
-      // @ts-ignore
-      skipFonts: true
-    })
+      style: {
+        transform: 'scale(1)',
+        transformOrigin: 'top left',
+        width: node.offsetWidth + 'px',
+        height: node.offsetHeight + 'px',
+      }
+    };
+    
+    toPng(node, options)
       .then((dataUrl) => {
         const link = document.createElement('a');
-        link.download = `${fileName}.jpg`;
+        link.download = `${fileName}.png`;
         link.href = dataUrl;
         link.click();
       })
       .catch((error) => {
         console.error('Error generating image: ', error);
-        alert(language === 'bn' ? 'ইমেজ ডাউনলোড করতে সমস্যা হয়েছে!' : 'Failed to download image!');
+        // Fallback to basic toJpeg if PNG encounters cross-origin issues
+        toJpeg(node, {
+          quality: 0.98,
+          pixelRatio: 3,
+          backgroundColor: '#ffffff'
+        })
+          .then((dataUrl) => {
+            const link = document.createElement('a');
+            link.download = `${fileName}.jpg`;
+            link.href = dataUrl;
+            link.click();
+          })
+          .catch((err) => {
+            console.error('Fallback image export failed:', err);
+            alert(language === 'bn' ? 'ইমেজ ডাউনলোড করতে সমস্যা হয়েছে!' : 'Failed to download image!');
+          });
       });
   };
 
@@ -1644,9 +1989,9 @@ export default function App() {
             
             {/* Nav Links */}
             <nav className="hidden lg:flex items-center h-full">
+              <NavButton label={t.home} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
               {userRole === 'admin' && (
                 <>
-                  <NavButton label={t.home} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
                   <NavButton label={language === 'bn' ? 'ডিপো খরচ' : 'Depot Expenses'} active={activeTab === 'expenses'} onClick={() => setActiveTab('expenses')} />
                   <NavButton label={language === 'bn' ? 'বিলিং হিসাব' : 'Billing Ledger'} active={activeTab === 'billing'} onClick={() => setActiveTab('billing')} />
                 </>
@@ -1705,9 +2050,9 @@ export default function App() {
                   onChange={(e) => setActiveTab(e.target.value as Tab)}
                   className="bg-black text-white text-[10px] font-black border-none rounded px-2.5 py-1.5 outline-none cursor-pointer"
                 >
+                  <option value="home">{t.home}</option>
                   {userRole === 'admin' && (
                     <>
-                      <option value="home">{t.home}</option>
                       <option value="expenses">{language === 'bn' ? 'ডিপো খরচ' : 'Depot Expenses'}</option>
                       <option value="billing">{language === 'bn' ? 'বিলিং হিসাব' : 'Billing Ledger'}</option>
                     </>
@@ -1758,6 +2103,11 @@ export default function App() {
                 onRestoreLedger={restoreTopUpCashBox}
                 onPermDeleteLedger={permanentDeleteLedger}
                 onDownloadImage={downloadElementAsImage}
+                notes={notes}
+                onDeleteNote={deleteNote}
+                onBulkDelete={bulkDeleteCalculations}
+                onBulkPermanentDelete={bulkPermanentDeleteCalculations}
+                onBulkRestore={bulkRestoreCalculations}
               />
             </motion.div>
           )}
@@ -1773,6 +2123,9 @@ export default function App() {
                 copyConfig={copyConfig}
                 cashBoxBalance={cashBoxBalance}
                 setConfirmDialog={setConfirmDialog}
+                userRole={userRole}
+                currentUser={currentUser}
+                currentUserEmail={currentUserEmail}
               />
             </motion.div>
           )}
@@ -2252,6 +2605,11 @@ interface HomeSectionProps {
   onRestoreLedger?: (id: string) => void;
   onPermDeleteLedger?: (id: string) => void;
   onDownloadImage?: (elementId: string, fileName: string) => void;
+  notes?: Note[];
+  onDeleteNote?: (id: string) => void;
+  onBulkDelete?: (ids: string[], onSuccess?: () => void) => void;
+  onBulkPermanentDelete?: (ids: string[], onSuccess?: () => void) => void;
+  onBulkRestore?: (ids: string[], onSuccess?: () => void) => void;
 }
 
 function HomeSection({ 
@@ -2282,9 +2640,14 @@ function HomeSection({
   onDeleteLedger,
   onRestoreLedger,
   onPermDeleteLedger,
-  onDownloadImage
+  onDownloadImage,
+  notes = [],
+  onDeleteNote,
+  onBulkDelete,
+  onBulkPermanentDelete,
+  onBulkRestore
 }: HomeSectionProps) {
-  const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger'>('active');
+  const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger' | 'userNotes'>('active');
   const [cashLedgerSubTab, setCashLedgerSubTab] = useState<'active' | 'trash'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
@@ -2292,6 +2655,12 @@ function HomeSection({
   const [memoCalc, setMemoCalc] = useState<Calculation | null>(null);
   const [buyerName, setBuyerName] = useState<string>('');
   const [operatorFilter, setOperatorFilter] = useState('ALL');
+
+  const [selectedCalcIds, setSelectedCalcIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setSelectedCalcIds([]);
+  }, [activeSubTab]);
 
   const activeLedger = useMemo(() => {
     return cashLedger.filter(entry => !entry.isDeleted);
@@ -2313,7 +2682,7 @@ function HomeSection({
 
   // Filter calculations based on local search query & operator filter
   const filteredList = useMemo(() => {
-    return calculations.filter(calc => {
+    const list = calculations.filter(calc => {
       const createdByVal = calc.createdBy || 'Guest';
       const matchesOperator = operatorFilter === 'ALL' || createdByVal.toLowerCase() === operatorFilter.toLowerCase();
       
@@ -2324,15 +2693,31 @@ function HomeSection({
         
       return matchesOperator && matchesSearch;
     });
+
+    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
+    return list.sort((a, b) => {
+      if (b.timestamp !== a.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      return (a.challanNo || 0) - (b.challanNo || 0);
+    });
   }, [calculations, searchQuery, operatorFilter]);
 
   // Filter deleted calculations based on search query
   const filteredDeletedList = useMemo(() => {
-    return deletedCalculations.filter(calc => {
+    const list = deletedCalculations.filter(calc => {
       const query = searchQuery.toLowerCase().trim();
       return !query || 
         calc.sellerName.toLowerCase().includes(query) || 
         (calc.challanNo !== undefined && calc.challanNo.toString().includes(query));
+    });
+
+    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
+    return list.sort((a, b) => {
+      if (b.timestamp !== a.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      return (a.challanNo || 0) - (b.challanNo || 0);
     });
   }, [deletedCalculations, searchQuery]);
 
@@ -2490,8 +2875,8 @@ function HomeSection({
         )}
       </div>
 
-      {/* Admin Specific Operations Logs Table */}
-      {userRole === 'admin' && (
+      {/* Operations Logs Table */}
+      {userRole && (
         <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden mt-6 animate-fadeIn">
           {/* Sub Tab Switcher */}
           <div className="flex border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 p-2 gap-2">
@@ -2521,19 +2906,36 @@ function HomeSection({
                 </span>
               )}
             </button>
+            {userRole === 'admin' && (
+              <button
+                onClick={() => setActiveSubTab('cashLedger')}
+                className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activeSubTab === 'cashLedger'
+                    ? 'bg-slate-900 text-yellow-400 shadow-sm border border-slate-850 dark:bg-slate-950 dark:text-yellow-400'
+                    : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <span>💵 {language === 'bn' ? 'ক্যাশ লেজার (অডিট)' : 'Cash Ledger (Audit)'}</span>
+              </button>
+            )}
             <button
-              onClick={() => setActiveSubTab('cashLedger')}
+              onClick={() => setActiveSubTab('userNotes')}
               className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
-                activeSubTab === 'cashLedger'
-                  ? 'bg-slate-900 text-yellow-400 shadow-sm border border-slate-850 dark:bg-slate-950 dark:text-yellow-400'
+                activeSubTab === 'userNotes'
+                  ? 'bg-blue-600 text-white shadow-sm font-black'
                   : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
               }`}
             >
-              <span>💵 {language === 'bn' ? 'ক্যাশ লেজার (অডিট)' : 'Cash Ledger (Audit)'}</span>
+              <span>📝 {language === 'bn' ? 'মেমো নোট খাতা' : 'Operator Memo Notes'}</span>
+              {notes.length > 0 && (
+                <span className="bg-white text-blue-600 text-[10px] font-black px-1.5 py-0.5 rounded-full border border-blue-200 leading-none">
+                  {notes.length}
+                </span>
+              )}
             </button>
           </div>
 
-          {activeSubTab !== 'cashLedger' ? (
+          {activeSubTab === 'active' || activeSubTab === 'trash' ? (
             <>
               <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <div>
@@ -2611,9 +3013,23 @@ function HomeSection({
                     return (
                       <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-black text-slate-400">
-                            📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="checkbox"
+                              checked={selectedCalcIds.includes(calc.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedCalcIds(prev => [...prev, calc.id]);
+                                } else {
+                                  setSelectedCalcIds(prev => prev.filter(id => id !== calc.id));
+                                }
+                              }}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
+                            />
+                            <span className="text-[10px] font-black text-slate-400">
+                              📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                            </span>
+                          </div>
                           <div className="flex items-center gap-1.5">
                             <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px]">
                               #{calc.challanNo !== undefined ? calc.challanNo : '---'}
@@ -2698,9 +3114,23 @@ function HomeSection({
                     return (
                       <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 bg-rose-50/10 dark:bg-rose-950/5">
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-black text-slate-400">
-                            📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="checkbox"
+                              checked={selectedCalcIds.includes(calc.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedCalcIds(prev => [...prev, calc.id]);
+                                } else {
+                                  setSelectedCalcIds(prev => prev.filter(id => id !== calc.id));
+                                }
+                              }}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
+                            />
+                            <span className="text-[10px] font-black text-slate-400">
+                              📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                            </span>
+                          </div>
                           <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px] line-through">
                             #{calc.challanNo !== undefined ? calc.challanNo : '---'}
                           </span>
@@ -2752,6 +3182,21 @@ function HomeSection({
                 <table className="w-full text-left">
                   <thead>
                     <tr className="bg-slate-50 dark:bg-slate-950 text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">
+                      <th className="px-4 py-3 w-10">
+                        <input 
+                          type="checkbox"
+                          checked={(activeSubTab === 'active' ? filteredList : filteredDeletedList).length > 0 && selectedCalcIds.length === (activeSubTab === 'active' ? filteredList : filteredDeletedList).length}
+                          onChange={(e) => {
+                            const list = activeSubTab === 'active' ? filteredList : filteredDeletedList;
+                            if (e.target.checked) {
+                              setSelectedCalcIds(list.map(c => c.id));
+                            } else {
+                              setSelectedCalcIds([]);
+                            }
+                          }}
+                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
+                        />
+                      </th>
                       <th className="px-4 py-3">Date</th>
                       <th className="px-4 py-3">Challan</th>
                       <th className="px-3 py-3">Seller</th>
@@ -2773,6 +3218,20 @@ function HomeSection({
                         const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
                         return (
                           <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
+                            <td className="px-4 py-3">
+                              <input 
+                                type="checkbox"
+                                checked={selectedCalcIds.includes(calc.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedCalcIds(prev => [...prev, calc.id]);
+                                  } else {
+                                    setSelectedCalcIds(prev => prev.filter(id => id !== calc.id));
+                                  }
+                                }}
+                                className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
+                              />
+                            </td>
                             <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
                               {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
                             </td>
@@ -2861,6 +3320,20 @@ function HomeSection({
                         const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
                         return (
                           <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
+                            <td className="px-4 py-3">
+                              <input 
+                                type="checkbox"
+                                checked={selectedCalcIds.includes(calc.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedCalcIds(prev => [...prev, calc.id]);
+                                  } else {
+                                    setSelectedCalcIds(prev => prev.filter(id => id !== calc.id));
+                                  }
+                                }}
+                                className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
+                              />
+                            </td>
                             <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
                               {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
                             </td>
@@ -2925,7 +3398,7 @@ function HomeSection({
             </>
           )}
         </>
-      ) : (
+      ) : activeSubTab === 'cashLedger' ? (
         <div className="p-6 space-y-6">
               {/* Cash Box Controls Card */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -3213,7 +3686,60 @@ function HomeSection({
                 )}
               </div>
             </div>
-          )}
+          ) : activeSubTab === 'userNotes' ? (
+            <div className="p-6 space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-2">
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-200">
+                    {language === 'bn' ? "অপারেটর মেমো নোট সমূহ" : "OPERATOR MEMORANDUM NOTES"}
+                  </h3>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
+                    {language === 'bn' ? `সর্বমোট ${notes.length} টি নোট রেকর্ড পাওয়া গেছে` : `Total of ${notes.length} notes found in database`}
+                  </p>
+                </div>
+              </div>
+
+              {notes.length === 0 ? (
+                <div className="text-center py-12 text-slate-300 font-bold uppercase text-[10px] bg-slate-50 dark:bg-slate-950 rounded-lg border border-slate-100 dark:border-slate-800">
+                  {language === 'bn' ? 'কোনো মেমো নোট পাওয়া যায়নি!' : 'No memorandum notes recorded yet!'}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {notes.map((n) => (
+                    <div key={n.id} className="bg-slate-50 dark:bg-slate-950 p-5 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col justify-between hover:border-yellow-400 transition-all duration-200 animate-fadeIn">
+                      <div>
+                        <div className="flex justify-between items-start mb-2 gap-4">
+                          <h4 className="font-black text-sm text-slate-800 dark:text-slate-100">{n.title}</h4>
+                          <button 
+                            onClick={() => {
+                              if (onDeleteNote) {
+                                onDeleteNote(n.id);
+                              }
+                            }}
+                            className="text-slate-300 hover:text-red-600 dark:text-slate-600 dark:hover:text-red-500 cursor-pointer p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-900 transition-all"
+                            title={language === 'bn' ? 'নোটটি মুছুন' : 'Delete note'}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                        <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">{n.content}</p>
+                      </div>
+                      <div className="flex justify-between items-center mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+                        <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase">
+                          🕒 {new Date(n.timestamp).toLocaleString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                        </span>
+                        {n.createdByName && (
+                          <span className="px-2 py-0.5 bg-yellow-100 dark:bg-slate-800 text-yellow-800 dark:text-slate-300 text-[9px] font-black rounded uppercase tracking-wider">
+                            👤 {n.createdByName}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -3609,18 +4135,18 @@ function HomeSection({
                   </p>
                 </div>
                 
-                <div className="w-64 space-y-2 text-right">
-                  <div className="flex justify-between text-slate-600">
-                    <span className="font-bold">{language === 'bn' ? 'উপ-মোট:' : 'Subtotal:'}</span>
-                    <span className="font-bold">৳{Math.round(memoCalc.totalPrice).toLocaleString()}</span>
+                <div className="w-80 space-y-2 text-right">
+                  <div className="flex justify-between items-center text-slate-600 gap-4">
+                    <span className="font-bold whitespace-nowrap">{language === 'bn' ? 'উপ-মোট:' : 'Subtotal:'}</span>
+                    <span className="font-bold whitespace-nowrap">৳{Math.round(memoCalc.totalPrice).toLocaleString()}</span>
                   </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span className="font-bold">{language === 'bn' ? 'ভ্যাট/ট্যাক্স (০%):' : 'VAT / Tax (0%):'}</span>
-                    <span className="font-bold">৳০</span>
+                  <div className="flex justify-between items-center text-slate-600 gap-4">
+                    <span className="font-bold whitespace-nowrap">{language === 'bn' ? 'ভ্যাট/ট্যাক্স (০%):' : 'VAT / Tax (0%):'}</span>
+                    <span className="font-bold whitespace-nowrap">৳০</span>
                   </div>
-                  <div className="flex justify-between border-t border-slate-200 pt-2 text-slate-950 text-base font-black">
-                    <span>{language === 'bn' ? 'সর্বমোট প্রদেয়:' : 'Total Payable:'}</span>
-                    <span className="text-indigo-600">৳{Math.round(memoCalc.totalPrice).toLocaleString()}</span>
+                  <div className="flex justify-between items-center border-t border-slate-200 pt-2 text-slate-950 text-base font-black gap-4">
+                    <span className="whitespace-nowrap">{language === 'bn' ? 'সর্বমোট প্রদেয়:' : 'Total Payable:'}</span>
+                    <span className="text-indigo-600 whitespace-nowrap">৳{Math.round(memoCalc.totalPrice).toLocaleString()}</span>
                   </div>
                 </div>
               </div>
@@ -3678,6 +4204,68 @@ function HomeSection({
           </div>
         </div>
       )}
+
+      {/* Sticky Floating Selection Bar for Bulk Actions */}
+      {selectedCalcIds.length > 0 && (activeSubTab === 'active' || activeSubTab === 'trash') && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] w-[92%] max-w-lg bg-slate-900 text-white p-4 rounded-xl shadow-2xl border border-slate-800 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-yellow-400 text-slate-950 font-black flex items-center justify-center text-xs shadow-inner shrink-0">
+              {selectedCalcIds.length}
+            </div>
+            <div>
+              <p className="text-xs font-black uppercase tracking-wider text-slate-100">
+                {language === 'bn' ? 'চালান নির্বাচিত হয়েছে' : 'Challans Selected'}
+              </p>
+              <button 
+                onClick={() => setSelectedCalcIds([])}
+                className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-white transition-colors cursor-pointer"
+              >
+                {language === 'bn' ? 'নির্বাচন বাতিল করুন' : 'Deselect All'}
+              </button>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2 shrink-0">
+            {activeSubTab === 'active' ? (
+              <button
+                onClick={() => {
+                  if (onBulkDelete) {
+                    onBulkDelete(selectedCalcIds, () => setSelectedCalcIds([]));
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-black uppercase text-[10px] tracking-wider rounded border border-red-500 transition-all flex items-center gap-1 cursor-pointer active:scale-95 shadow-sm"
+              >
+                <Trash2 size={12} />
+                <span>{language === 'bn' ? 'সব মুছুন' : 'Delete Selected'}</span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    if (onBulkRestore) {
+                      onBulkRestore(selectedCalcIds, () => setSelectedCalcIds([]));
+                    }
+                  }}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-black uppercase text-[10px] tracking-wider rounded border border-green-500 transition-all flex items-center gap-1 cursor-pointer active:scale-95 shadow-sm"
+                >
+                  <span>{language === 'bn' ? 'রিস্টোর' : 'Restore'}</span>
+                </button>
+                <button
+                  onClick={() => {
+                    if (onBulkPermanentDelete) {
+                      onBulkPermanentDelete(selectedCalcIds, () => setSelectedCalcIds([]));
+                    }
+                  }}
+                  className="px-4 py-2 bg-rose-700 hover:bg-rose-800 text-white font-black uppercase text-[10px] tracking-wider rounded border border-rose-600 transition-all flex items-center gap-1 cursor-pointer active:scale-95 shadow-sm"
+                >
+                  <Trash2 size={12} />
+                  <span>{language === 'bn' ? 'চিরতরে মুছুন' : 'Delete Permanently'}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3711,15 +4299,56 @@ interface CalculatorProps {
   copyConfig: CopyConfig;
   cashBoxBalance: number;
   setConfirmDialog?: React.Dispatch<React.SetStateAction<any>>;
+  userRole?: 'admin' | 'guest' | null;
+  currentUser?: string;
+  currentUserEmail?: string | null;
 }
 
-function CalculatorSection({ onSave, expectedNextChallan, language, t, calculations, receiptVisibility, copyConfig, cashBoxBalance, setConfirmDialog }: CalculatorProps) {
+function CalculatorSection({ 
+  onSave, 
+  expectedNextChallan, 
+  language, 
+  t, 
+  calculations, 
+  receiptVisibility, 
+  copyConfig, 
+  cashBoxBalance, 
+  setConfirmDialog,
+  userRole,
+  currentUser,
+  currentUserEmail
+}: CalculatorProps) {
+  // Backdated and manual override states
+  const [isBackdated, setIsBackdated] = useState(false);
+  const [customDateTime, setCustomDateTime] = useState('');
+
+  const dateValue = customDateTime ? customDateTime.substring(0, 10) : '';
+  const timeValue = customDateTime ? customDateTime.substring(11, 16) : '';
+
+  const handleDateChange = (newDate: string) => {
+    const timePart = timeValue || '12:00';
+    if (newDate) {
+      setCustomDateTime(`${newDate}T${timePart}`);
+    } else {
+      setCustomDateTime('');
+      setIsBackdated(false);
+    }
+  };
+
+  const handleTimeChange = (newTime: string) => {
+    const datePart = dateValue || new Date().toISOString().substring(0, 10);
+    if (newTime) {
+      setCustomDateTime(`${datePart}T${newTime}`);
+    }
+  };
+
   const [formData, setFormData] = useState({
     sellerName: '',
     totalKg: '',
     ratePerMon: '',
     monType: 41 as MonType,
-    challanNo: expectedNextChallan.toString()
+    challanNo: '',
+    getEntryNo: ''
   });
 
   const [allowSerialBypass, setAllowSerialBypass] = useState(false);
@@ -3737,19 +4366,84 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     targetMonPrice: '',
     monType: 41 as MonType,
     ratePerMon: '',
-    challanNo: expectedNextChallan.toString(),
+    challanNo: '',
+    getEntryNo: '',
     activeInput: 'weight' as 'weight' | 'targetPrice'
   });
 
-  // Sync expected Challan number
-  useEffect(() => {
-    setFormData(prev => ({ ...prev, challanNo: expectedNextChallan.toString() }));
-  }, [expectedNextChallan]);
+  // Helper to compare same local calendar date
+  const isSameLocalDate = (t1: number, t2: number) => {
+    const d1 = new Date(t1);
+    const d2 = new Date(t2);
+    return d1.getFullYear() === d2.getFullYear() &&
+           d1.getMonth() === d2.getMonth() &&
+           d1.getDate() === d2.getDate();
+  };
 
-  // Sync expected Challan number for minus calculate
+  // Determine the effective timestamp of the transaction
+  const selectedTimestamp = useMemo(() => {
+    if (isBackdated && customDateTime) {
+      const parsed = new Date(customDateTime).getTime();
+      if (!isNaN(parsed)) return parsed;
+    }
+    return Date.now();
+  }, [isBackdated, customDateTime]);
+
+  // Compute date-specific automatic sequence suggestions (Latest + 1)
+  const { defaultGate, defaultChallanVal } = useMemo(() => {
+    const dayCalcs = calculations.filter(c => !c.isDeleted && isSameLocalDate(c.timestamp, selectedTimestamp));
+    
+    let maxGate = 0;
+    let maxChallanForDay = 0;
+    
+    dayCalcs.forEach(c => {
+      if (c.getEntryNo && c.getEntryNo > maxGate) {
+        maxGate = c.getEntryNo;
+      }
+      if (c.challanNo && c.challanNo > maxChallanForDay) {
+        maxChallanForDay = c.challanNo;
+      }
+    });
+    
+    const defaultGate = maxGate + 1;
+    
+    let defaultChallanVal = 0;
+    if (maxChallanForDay > 0) {
+      defaultChallanVal = maxChallanForDay + 1;
+    } else {
+      defaultChallanVal = expectedNextChallan;
+    }
+    
+    return { defaultGate, defaultChallanVal };
+  }, [calculations, selectedTimestamp, expectedNextChallan]);
+
+  // Ensure sequence prediction updates reactively only when the date changes or defaults update
+  const lastSelectedDateStr = useRef('');
   useEffect(() => {
-    setMinusFormData(prev => ({ ...prev, challanNo: expectedNextChallan.toString() }));
-  }, [expectedNextChallan]);
+    const dStr = new Date(selectedTimestamp).toDateString();
+    if (lastSelectedDateStr.current !== dStr) {
+      lastSelectedDateStr.current = dStr;
+      setFormData(prev => ({
+        ...prev,
+        challanNo: defaultChallanVal.toString(),
+        getEntryNo: defaultGate.toString()
+      }));
+      setMinusFormData(prev => ({
+        ...prev,
+        challanNo: defaultChallanVal.toString(),
+        getEntryNo: defaultGate.toString()
+      }));
+    }
+  }, [selectedTimestamp, defaultGate, defaultChallanVal]);
+
+  // Check for pre-save duplicates (SAME date + SAME Gate Entry OR Challan No)
+  const checkDuplicate = (targetTimestamp: number, entryNo: number, challanNo: number) => {
+    return calculations.some(c => 
+      !c.isDeleted &&
+      isSameLocalDate(c.timestamp, targetTimestamp) &&
+      ((entryNo && c.getEntryNo === entryNo) || (challanNo && c.challanNo === challanNo))
+    );
+  };
 
   // Real-time calculation logic for minus calculation
   const minusCalcResult = useMemo(() => {
@@ -3823,7 +4517,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
   const enteredChallanNum = isMinusMode ? (parseInt(minusFormData.challanNo) || 0) : (parseInt(formData.challanNo) || 0);
   const showChallanWarning = (isMinusMode ? minusFormData.challanNo : formData.challanNo) !== '' && enteredChallanNum !== expectedNextChallan;
 
-  // On Calculate (হিসাব করুন): Computes the preview representation of the firewood invoice but does NOT save yet.
+  // On Calculate: Computes the preview representation of the firewood invoice but does NOT save yet.
+  // On Calculate: Computes the preview representation of the firewood invoice but does NOT save yet.
   const handleCalculate = () => {
     if (!formData.challanNo) {
       alert(t.alertChallanMust);
@@ -3844,7 +4539,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       extraKg: currentCalcResult.extraKg,
       totalMonDecimal: currentCalcResult.totalMonDecimal,
       price: currentCalcResult.price,
-      ratePerMon: parseFloat(formData.ratePerMon)
+      ratePerMon: parseFloat(formData.ratePerMon),
+      getEntryNo: parseInt(formData.getEntryNo) || 0
     };
 
     setPreviewResult(calculated);
@@ -3862,6 +4558,24 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       return;
     }
 
+    if (isBackdated && !customDateTime) {
+      alert(language === 'bn' ? 'অনুগ্রহ করে সঠিক ব্যাকডেট তারিখ ও সময় নির্বাচন করুন!' : 'Please select a valid backdate Date and Time!');
+      return;
+    }
+
+    const timestamp = selectedTimestamp;
+
+    // Check duplicate saved for date
+    const finalChallan = parseInt(formData.challanNo) || 0;
+    const finalGate = parseInt(formData.getEntryNo) || 0;
+    const isDup = checkDuplicate(timestamp, finalGate, finalChallan);
+    if (isDup) {
+      alert(language === 'bn' 
+        ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই গেট এন্ট্রি/চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
+        : 'Duplicate Error: This Gate Entry/Challan Number already exists for this date.');
+      return;
+    }
+
     if (showChallanWarning && !allowSerialBypass) {
       const errText = language === 'bn' 
         ? `Error (চালান ভুল): চালান নম্বরটি ক্রমিক অনুসারী নয়। সম্ভাব্য নম্বর: ${expectedNextChallan}। আপনি যদি এই নম্বরেই সাবমিট করতে চান তবে বিশেষ চেক-বক্সটি টিক করুন।`
@@ -3873,7 +4587,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     const calculated = {
       sellerName: formData.sellerName,
       totalKg: parseFloat(formData.totalKg),
-      challanNo: enteredChallanNum,
+      challanNo: finalChallan,
       monType: formData.monType,
       monCount: currentCalcResult.monCount,
       extraKg: currentCalcResult.extraKg,
@@ -3892,26 +4606,27 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       return;
     }
 
-    // Check duplicate saved today
-    const startOfDay = new Date().setHours(0, 0, 0, 0);
-    const isDuplicate = calculations.some(c => 
+    // Secondary soft validation for similar record saved today
+    const startOfDay = new Date(timestamp).setHours(0, 0, 0, 0);
+    const softDuplicate = calculations.some(c => 
       c.timestamp >= startOfDay &&
+      c.timestamp < startOfDay + 86400000 &&
       c.sellerName.trim().toLowerCase() === calculated.sellerName.trim().toLowerCase() && 
       c.totalKg === calculated.totalKg
     );
 
     const performSave = async () => {
-      // Save to DB!
       const savedChallanNo = await onSave({
         id: Math.random().toString(36).substr(2, 9),
-        timestamp: Date.now(),
+        timestamp,
         sellerName: calculated.sellerName,
         totalKg: calculated.totalKg,
         ratePerMon: calculated.ratePerMon,
         monType: calculated.monType,
         totalMon: calculated.totalMonDecimal,
         totalPrice: calculated.price,
-        challanNo: calculated.challanNo
+        challanNo: finalChallan,
+        getEntryNo: finalGate
       });
 
       if (savedChallanNo === false) {
@@ -3920,7 +4635,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
 
       const finalizedResult = {
         ...calculated,
-        challanNo: savedChallanNo
+        challanNo: finalChallan,
+        getEntryNo: finalGate
       };
 
       setPreviewResult(finalizedResult);
@@ -3931,18 +4647,21 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
         : 'Calculation finalized and successfully saved to database!';
       alert(successMsg);
 
-      // Increment challan for next row & reset form
+      // Reset form
       setFormData({
         sellerName: '',
         totalKg: '',
         ratePerMon: '',
         monType: formData.monType,
-        challanNo: (savedChallanNo + 1).toString()
+        challanNo: (finalChallan + 1).toString(),
+        getEntryNo: (finalGate + 1).toString()
       });
+      setIsBackdated(false);
+      setCustomDateTime('');
       setAllowSerialBypass(false);
     };
 
-    if (isDuplicate && setConfirmDialog) {
+    if (softDuplicate && setConfirmDialog) {
       setConfirmDialog({
         isOpen: true,
         title: language === 'bn' ? 'ডুপ্লিকেট হিসাবের নিশ্চিতকরণ' : 'Confirm Duplicate Entry',
@@ -3968,8 +4687,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       totalKg: '',
       ratePerMon: '',
       monType: formData.monType,
-      challanNo: expectedNextChallan.toString()
+      challanNo: defaultChallanVal.toString(),
+      getEntryNo: defaultGate.toString()
     });
+    setIsBackdated(false);
+    setCustomDateTime('');
     setPreviewResult(null);
     setIsSaved(false);
     setAllowSerialBypass(false);
@@ -3983,9 +4705,12 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       targetMonPrice: '',
       monType: minusFormData.monType,
       ratePerMon: '',
-      challanNo: expectedNextChallan.toString(),
+      challanNo: defaultChallanVal.toString(),
+      getEntryNo: defaultGate.toString(),
       activeInput: 'weight'
     });
+    setIsBackdated(false);
+    setCustomDateTime('');
     setPreviewResult(null);
     setIsSaved(false);
   };
@@ -4033,6 +4758,24 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       return;
     }
 
+    if (isBackdated && !customDateTime) {
+      alert(language === 'bn' ? 'অনুগ্রহ করে সঠিক ব্যাকডেট তারিখ ও সময় নির্বাচন করুন!' : 'Please select a valid backdate Date and Time!');
+      return;
+    }
+
+    const timestamp = selectedTimestamp;
+
+    // Check duplicate saved for date
+    const finalChallan = parseInt(minusFormData.challanNo) || 0;
+    const finalGate = parseInt(minusFormData.getEntryNo) || 0;
+    const isDup = checkDuplicate(timestamp, finalGate, finalChallan);
+    if (isDup) {
+      alert(language === 'bn' 
+        ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই গেট এন্ট্রি/চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
+        : 'Duplicate Error: This Gate Entry/Challan Number already exists for this date.');
+      return;
+    }
+
     if (showChallanWarning && !allowSerialBypass) {
       const errText = language === 'bn' 
         ? `Error (চালান ভুল): চালান নম্বরটি ক্রমিক অনুসারী নয়। সম্ভাব্য নম্বর: ${expectedNextChallan}। আপনি যদি এই নম্বরেই সাবমিট করতে চান তবে বিশেষ চেক-বক্সটি টিক করুন।`
@@ -4041,10 +4784,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       return;
     }
 
-    const enteredChallanNum = parseInt(minusFormData.challanNo) || 0;
-    const startOfDay = new Date().setHours(0, 0, 0, 0);
-    const isDuplicate = calculations.some(c => 
+    const enteredChallanNum = finalChallan;
+    const startOfDay = new Date(timestamp).setHours(0, 0, 0, 0);
+    const softDuplicate = calculations.some(c => 
       c.timestamp >= startOfDay &&
+      c.timestamp < startOfDay + 86400000 &&
       c.sellerName.trim().toLowerCase() === minusFormData.sellerName.trim().toLowerCase() && 
       c.totalKg === parseFloat(minusFormData.totalKg)
     );
@@ -4076,17 +4820,17 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     }
 
     const performMinusSave = async () => {
-      // Save to DB!
       const savedChallanNo = await onSave({
         id: Math.random().toString(36).substr(2, 9),
-        timestamp: Date.now(),
+        timestamp,
         sellerName: calculated.sellerName,
         totalKg: calculated.totalKg,
         ratePerMon: calculated.ratePerMon,
         monType: calculated.monType,
         totalMon: calculated.totalMonDecimal,
         totalPrice: calculated.price,
-        challanNo: calculated.challanNo,
+        challanNo: finalChallan,
+        getEntryNo: finalGate,
         deductedWeight: calculated.deductedWeight,
         deductionPercentage: calculated.deductionPercentage,
         isMinusCalculated: true,
@@ -4099,7 +4843,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
 
       const finalizedResult = {
         ...calculated,
-        challanNo: savedChallanNo
+        challanNo: finalChallan,
+        getEntryNo: finalGate
       };
 
       setPreviewResult(finalizedResult);
@@ -4110,7 +4855,7 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
         : 'Minus calculation finalized and successfully saved to database!';
       alert(successMsg);
 
-      // Increment challan for next row & reset form
+      // Reset form
       setMinusFormData({
         sellerName: '',
         totalKg: '',
@@ -4118,13 +4863,16 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
         targetMonPrice: '',
         monType: minusFormData.monType,
         ratePerMon: '',
-        challanNo: (savedChallanNo + 1).toString(),
+        challanNo: (finalChallan + 1).toString(),
+        getEntryNo: (finalGate + 1).toString(),
         activeInput: 'weight'
       });
+      setIsBackdated(false);
+      setCustomDateTime('');
       setAllowSerialBypass(false);
     };
 
-    if (isDuplicate && setConfirmDialog) {
+    if (softDuplicate && setConfirmDialog) {
       setConfirmDialog({
         isOpen: true,
         title: language === 'bn' ? 'ডুপ্লিকেট হিসাবের নিশ্চিতকরণ' : 'Confirm Duplicate Entry',
@@ -4211,57 +4959,57 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
   const handleSaveImage = () => {
     if (!previewResult) return;
 
+    const logicalWidth = 600;
+    const logicalHeight = 800;
+    const scale = 3;
+
     const canvas = document.createElement('canvas');
-    canvas.width = 600;
-    canvas.height = 800;
+    canvas.width = logicalWidth * scale;
+    canvas.height = logicalHeight * scale;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    ctx.scale(scale, scale);
+
     const isBn = language === 'bn';
 
-    // Background color
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, logicalWidth, logicalHeight);
 
-    // Decorative Yellow border
     ctx.fillStyle = '#facc15';
-    ctx.fillRect(0, 0, canvas.width, 22);
+    ctx.fillRect(0, 0, logicalWidth, 22);
 
     ctx.lineWidth = 10;
     ctx.strokeStyle = '#facc15';
-    ctx.strokeRect(5, 5, canvas.width - 10, canvas.height - 10);
+    ctx.strokeRect(5, 5, logicalWidth - 10, logicalHeight - 10);
 
-    // Thick black inner line
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = '#000000';
-    ctx.strokeRect(16, 16, canvas.width - 32, canvas.height - 32);
+    ctx.strokeRect(16, 16, logicalWidth - 32, logicalHeight - 32);
 
     const fontStr = (size: number, weight: string = 'normal') => `${weight} ${size}px 'Courier New', 'Courier', Arial, sans-serif`;
 
-    // Headers
     ctx.fillStyle = '#000000';
     ctx.textAlign = 'center';
     ctx.font = fontStr(28, 'bold');
-    ctx.fillText(isBn ? 'এ. এস এন্টারপ্রাইজ' : 'A. S Enterprise', canvas.width / 2, 65);
+    ctx.fillText(isBn ? 'এ. এস এন্টারপ্রাইজ' : 'A. S Enterprise', logicalWidth / 2, 65);
 
     ctx.font = fontStr(15, 'bold');
     ctx.fillStyle = '#4b5563';
-    ctx.fillText(isBn ? 'খড়ি সরবরাহকারী ও পাইকারি বিক্রেতা' : 'Firewood Supplier & Wholesaler', canvas.width / 2, 90);
+    ctx.fillText(isBn ? 'খড়ি সরবরাহকারী ও পাইকারি বিক্রেতা' : 'Firewood Supplier & Wholesaler', logicalWidth / 2, 90);
 
     ctx.fillStyle = '#0f172a';
     ctx.font = fontStr(15, 'bold');
     const mobileNumFormatted = isBn ? toBengaliDigits('01766761877') : '01766761877';
-    ctx.fillText(isBn ? `প্রোপ্রাইটর: আবু সালেহ | মোবাইল: ${mobileNumFormatted}` : `Proprietor: Abu Saleh | Mobile: ${mobileNumFormatted}`, canvas.width / 2, 115);
+    ctx.fillText(isBn ? `প্রোপ্রাইটর: আবু সালেহ | মোবাইল: ${mobileNumFormatted}` : `Proprietor: Abu Saleh | Mobile: ${mobileNumFormatted}`, logicalWidth / 2, 115);
 
-    // Dividers
     ctx.beginPath();
     ctx.moveTo(30, 135);
-    ctx.lineTo(canvas.width - 30, 135);
+    ctx.lineTo(logicalWidth - 30, 135);
     ctx.strokeStyle = '#cbd5e1';
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Memo serial detail row
     ctx.textAlign = 'left';
     ctx.fillStyle = '#1e293b';
     ctx.font = fontStr(16, 'bold');
@@ -4271,22 +5019,21 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
     }
 
     ctx.textAlign = 'right';
-    const dateBD = new Date().toLocaleDateString('bn-BD', { day: 'numeric', month: 'long', year: 'numeric' });
-    const dateFormatted = isBn ? toBengaliDigits(dateBD) : new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' });
-    ctx.fillText(isBn ? `তারিখ: ${dateFormatted}` : `Date: ${dateFormatted}`, canvas.width - 40, 175);
+    const calcDate = previewResult.timestamp ? new Date(previewResult.timestamp) : new Date();
+    const dateBD = calcDate.toLocaleDateString('bn-BD', { day: 'numeric', month: 'long', year: 'numeric' });
+    const dateFormatted = isBn ? toBengaliDigits(dateBD) : calcDate.toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' });
+    ctx.fillText(isBn ? `তারিখ: ${dateFormatted}` : `Date: ${dateFormatted}`, logicalWidth - 40, 175);
 
-    // Structured panel background
     ctx.fillStyle = '#fbfbfd';
-    ctx.fillRect(40, 205, canvas.width - 80, 255);
+    ctx.fillRect(40, 205, logicalWidth - 80, 255);
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
-    ctx.strokeRect(40, 205, canvas.width - 80, 255);
+    ctx.strokeRect(40, 205, logicalWidth - 80, 255);
 
-    // Data rows according to visibility settings configured in App Settings
     const displayList = [];
     if (receiptVisibility.sellerName) {
       displayList.push({ 
-        label: isBn ? 'বিক্রেতার নাম:' : 'Seller Name:', 
+        label: isBn ? 'খরিদ্দার/বিক্রেতার নাম:' : 'Seller Name:', 
         value: previewResult.sellerName 
       });
     }
@@ -4337,23 +5084,21 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       ctx.textAlign = 'right';
       ctx.fillStyle = r.color || '#000000';
       ctx.font = fontStr(18, 'bold');
-      ctx.fillText(r.value, canvas.width - 55, itemY + index * 45);
+      ctx.fillText(r.value, logicalWidth - 55, itemY + index * 45);
 
-      // Separator lines
       if (index < displayList.length - 1) {
         ctx.beginPath();
         ctx.moveTo(50, itemY + index * 45 + 18);
-        ctx.lineTo(canvas.width - 50, itemY + index * 45 + 18);
+        ctx.lineTo(logicalWidth - 50, itemY + index * 45 + 18);
         ctx.strokeStyle = '#e2e8f0';
         ctx.lineWidth = 1;
         ctx.stroke();
       }
     });
 
-    // Net Payable Box Container
     if (receiptVisibility.totalPayable) {
       ctx.fillStyle = '#000000';
-      ctx.fillRect(40, 480, canvas.width - 80, 85);
+      ctx.fillRect(40, 480, logicalWidth - 80, 85);
 
       ctx.fillStyle = '#facc15';
       ctx.textAlign = 'left';
@@ -4364,26 +5109,25 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       ctx.font = fontStr(30, 'bold');
       const formattedPrice = Math.round(previewResult.price);
       const priceToShow = isBn ? `${toBengaliDigits(formattedPrice.toLocaleString())} টাকা` : `৳${formattedPrice.toLocaleString()}`;
-      ctx.fillText(priceToShow, canvas.width - 60, 534);
+      ctx.fillText(priceToShow, logicalWidth - 60, 534);
     }
 
-    // Footnote Warning
     if (receiptVisibility.disclaimer) {
       ctx.textAlign = 'center';
       ctx.font = fontStr(13, 'bold');
       ctx.fillStyle = '#dc2626';
-      ctx.fillText(isBn ? 'विशेष দ্রষ্টব্য (Warning Disclaimer):' : 'Warning Disclaimer:', canvas.width / 2, 590);
+      ctx.fillText(isBn ? 'বিশেষ দ্রষ্টব্য (Warning Disclaimer):' : 'Warning Disclaimer:', logicalWidth / 2, 590);
 
       ctx.fillStyle = '#1e293b';
       ctx.font = fontStr(12, 'bold');
       if (isBn) {
-        ctx.fillText('এখানে কোনো চিকন খড়ি নেওয়া হয় না। খড়ির সাইজ সর্বনিম্ন বের ৬" ইঞ্চি', canvas.width / 2, 615);
-        ctx.fillText('থেকে সর্বোচ্চ ৬৫ ইঞ্চি পর্যন্ত ও লম্বায় সর্বনিম্ন ৩০ ইঞ্চি থেকে ৬০ ইঞ্চি পর্যন্ত খড়ি নেওয়া হয়।', canvas.width / 2, 635);
-        ctx.fillText('শিমুল, জিকা, আমরা, ডুমুর, শেওড়া, জিগনাই কম চলে এবং ১১০ টাকা রেট।', canvas.width / 2, 655);
+        ctx.fillText('এখানে কোনো চিকন খড়ি নেওয়া হয় না। খড়ির সাইজ সর্বনিম্ন বের ৬" ইঞ্চি', logicalWidth / 2, 615);
+        ctx.fillText('থেকে সর্বোচ্চ ৬৫ ইঞ্চি পর্যন্ত ও লম্বায় সর্বনিম্ন ৩০ ইঞ্চি থেকে ৬০ ইঞ্চি পর্যন্ত খড়ি নেওয়া হয়।', logicalWidth / 2, 635);
+        ctx.fillText('শিমুল, জিকা, আমরা, ডুমুর, শেওড়া, জিগনাই কম চলে এবং ১১০ টাকা রেট।', logicalWidth / 2, 655);
       } else {
-        ctx.fillText('Thin firewood is strictly rejected. Circumference must be min 6" to max 65"', canvas.width / 2, 615);
-        ctx.fillText('and length must be min 30" to max 60".', canvas.width / 2, 635);
-        ctx.fillText('Shimul, Zika, Amra, Dumur, Sheora, Jignai are less in demand and rate is 110 TK.', canvas.width / 2, 655);
+        ctx.fillText('Thin firewood is strictly rejected. Circumference must be min 6" to max 65"', logicalWidth / 2, 615);
+        ctx.fillText('and length must be min 30" to max 60".', logicalWidth / 2, 635);
+        ctx.fillText('Shimul, Zika, Amra, Dumur, Sheora, Jignai are less in demand and rate is 110 TK.', logicalWidth / 2, 655);
       }
     }
 
@@ -4392,8 +5136,8 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
       ctx.textAlign = 'right';
       ctx.fillStyle = '#000000';
       ctx.font = fontStr(14, 'bold');
-      ctx.fillText('-------------------------', canvas.width - 45, 725);
-      ctx.fillText(isBn ? 'প্রোপ্রাইটর স্বাক্ষর (আবু সালেহ)' : 'Proprietor Signature (Abu Saleh)', canvas.width - 45, 745);
+      ctx.fillText('-------------------------', logicalWidth - 45, 725);
+      ctx.fillText(isBn ? 'প্রোপ্রাইটর স্বাক্ষর (আবু সালেহ)' : 'Proprietor Signature (Abu Saleh)', logicalWidth - 45, 745);
     }
 
     const dataURI = canvas.toDataURL('image/png');
@@ -4411,20 +5155,22 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
             <CalcIcon className="text-yellow-500 w-5 h-5 animate-bounce" />
             <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider">{t.calculatorSectionTitle}</h3>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setIsMinusMode(!isMinusMode);
-              setPreviewResult(null); // Clear preview when changing modes
-            }}
-            className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all select-none active:scale-95 flex items-center gap-1.5 ${
-              isMinusMode 
-                ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-900/40' 
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
-            }`}
-          >
-            <span>{isMinusMode ? "✕ [সাধারণ হিসাব]" : "⚖ [মাইনস ক্যালকুলেট]"}</span>
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsMinusMode(!isMinusMode);
+                setPreviewResult(null); // Clear preview when changing modes
+              }}
+              className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all select-none active:scale-95 flex items-center gap-1.5 ${
+                isMinusMode 
+                  ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-900/40' 
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+              }`}
+            >
+              <span>{isMinusMode ? "✕ [সাধারণ হিসাব]" : "⚖ [মাইনস ক্যালকুলেট]"}</span>
+            </button>
+          </div>
         </div>
 
         {/* Real-time Cash Box Balance Widget */}
@@ -4453,10 +5199,12 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
         
         {!isMinusMode ? (
           <>
-            {/* Horizontal Input Row aligned equally */}
+            {/* Compact Unified Horizontal Input Row */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end mb-6">
               <div className="md:col-span-3">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.sellerName}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  {t.sellerName}
+                </label>
                 <input 
                   type="text" 
                   placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
@@ -4465,8 +5213,11 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                   onChange={e => setFormData({ ...formData, sellerName: e.target.value })}
                 />
               </div>
+
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.totalWeight}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  {t.totalWeight}
+                </label>
                 <input 
                   type="number" 
                   placeholder="0"
@@ -4475,20 +5226,37 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                   onChange={e => setFormData({ ...formData, totalKg: e.target.value })}
                 />
               </div>
-              <div className="md:col-span-2">
+
+              <div className="md:col-span-1">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
-                  {t.challanNum} {language === 'bn' ? '(স্বয়ংক্রিয়)' : '(Automated)'}
+                  {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry'}
                 </label>
                 <input 
-                  type="text" 
-                  className="w-full h-11 px-3 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 outline-none cursor-not-allowed opacity-80"
-                  value={formData.challanNo ? `#${formData.challanNo}` : '---'}
-                  disabled
-                  readOnly
+                  type="number" 
+                  placeholder="0"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                  value={formData.getEntryNo}
+                  onChange={e => setFormData({ ...formData, getEntryNo: e.target.value })}
                 />
               </div>
-              <div className="md:col-span-3">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.monSystem}</label>
+
+              <div className="md:col-span-2">
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  {language === 'bn' ? 'চালান নং (সম্পাদনাযোগ্য)' : 'Challan No'}
+                </label>
+                <input 
+                  type="number" 
+                  placeholder="0"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
+                  value={formData.challanNo}
+                  onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  {t.monSystem}
+                </label>
                 <div className="flex gap-1 h-11">
                   {[40, 41, 42, 43].map(type => (
                     <button
@@ -4501,13 +5269,16 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                           : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700'
                       }`}
                     >
-                      {type} KG
+                      {type}
                     </button>
                   ))}
                 </div>
               </div>
+
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">{t.ratePerMon}</label>
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  {t.ratePerMon}
+                </label>
                 <input 
                   type="number" 
                   placeholder="0"
@@ -4517,6 +5288,66 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 />
               </div>
             </div>
+
+            {/* Backdated Entry Toggle/Checkbox */}
+            <div className="mb-4 bg-slate-50 dark:bg-slate-900/60 p-3.5 rounded-xl border border-slate-150 dark:border-slate-800 flex items-center justify-between">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={isBackdated}
+                  onChange={e => {
+                    const checked = e.target.checked;
+                    setIsBackdated(checked);
+                    if (checked) {
+                      // Set current local datetime
+                      const now = new Date();
+                      const dPart = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+                      const tPart = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+                      setCustomDateTime(`${dPart}T${tPart}`);
+                    } else {
+                      setCustomDateTime('');
+                    }
+                  }}
+                  className="w-4 h-4 rounded text-yellow-500 focus:ring-yellow-400 border-slate-300 dark:border-slate-700 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                    {language === 'bn' ? 'ব্যাকডেটেড এন্ট্রি (Backdated Entry)' : 'Backdated Entry'}
+                  </span>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
+                    {language === 'bn' ? 'অতীতের কোনো তারিখ ও সময়ে খাতার এন্ট্রি যুক্ত করার জন্য এটি সিলেক্ট করুন' : 'Enable to record this entry with a past date and time'}
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            {/* Backdated Date & Time Pickers */}
+            {isBackdated && (
+              <div className="bg-yellow-500/5 dark:bg-yellow-500/2 p-4 rounded-xl border border-yellow-500/20 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4 animate-fadeIn text-left">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? 'তারিখ নির্বাচন করুন' : 'Select Date'}
+                  </label>
+                  <input 
+                    type="date" 
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                    value={dateValue}
+                    onChange={e => handleDateChange(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? 'সময় নির্বাচন করুন' : 'Select Time'}
+                  </label>
+                  <input 
+                    type="time" 
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                    value={timeValue}
+                    onChange={e => handleTimeChange(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 pt-1">
               {/* Allow manual custom sequential check or bypass */}
@@ -4781,6 +5612,66 @@ function CalculatorSection({ onSave, expectedNextChallan, language, t, calculati
                 </div>
               </div>
             </div>
+
+            {/* Backdated Entry Toggle/Checkbox (Minus Mode) */}
+            <div className="bg-slate-50 dark:bg-slate-900/60 p-3.5 rounded-xl border border-slate-150 dark:border-slate-800 flex items-center justify-between">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={isBackdated}
+                  onChange={e => {
+                    const checked = e.target.checked;
+                    setIsBackdated(checked);
+                    if (checked) {
+                      // Set current local datetime
+                      const now = new Date();
+                      const dPart = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+                      const tPart = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+                      setCustomDateTime(`${dPart}T${tPart}`);
+                    } else {
+                      setCustomDateTime('');
+                    }
+                  }}
+                  className="w-4 h-4 rounded text-yellow-500 focus:ring-yellow-400 border-slate-300 dark:border-slate-700 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                    {language === 'bn' ? 'ব্যাকডেটেড এন্ট্রি (Backdated Entry)' : 'Backdated Entry'}
+                  </span>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
+                    {language === 'bn' ? 'অতীতের কোনো তারিখ ও সময়ে খাতার এন্ট্রি যুক্ত করার জন্য এটি সিলেক্ট করুন' : 'Enable to record this entry with a past date and time'}
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            {/* Backdated Date & Time Pickers (Minus Mode) */}
+            {isBackdated && (
+              <div className="bg-yellow-500/5 dark:bg-yellow-500/2 p-4 rounded-xl border border-yellow-500/20 grid grid-cols-1 sm:grid-cols-2 gap-4 animate-fadeIn text-left">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? 'তারিখ নির্বাচন করুন' : 'Select Date'}
+                  </label>
+                  <input 
+                    type="date" 
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                    value={dateValue}
+                    onChange={e => handleDateChange(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? 'সময় নির্বাচন করুন' : 'Select Time'}
+                  </label>
+                  <input 
+                    type="time" 
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                    value={timeValue}
+                    onChange={e => handleTimeChange(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Action Buttons */}
             <div className="grid grid-cols-3 gap-2 pt-2">
@@ -5048,10 +5939,20 @@ function HistorySection({
 
   // Handle filtering
   const filteredList = useMemo(() => {
-    if (operatorFilter === 'ALL') return calculations;
-    return calculations.filter(c => {
-      const createdByVal = c.createdBy || 'Guest';
-      return createdByVal.toLowerCase() === operatorFilter.toLowerCase();
+    let list = calculations;
+    if (operatorFilter !== 'ALL') {
+      list = calculations.filter(c => {
+        const createdByVal = c.createdBy || 'Guest';
+        return createdByVal.toLowerCase() === operatorFilter.toLowerCase();
+      });
+    }
+
+    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
+    return [...list].sort((a, b) => {
+      if (b.timestamp !== a.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      return (a.challanNo || 0) - (b.challanNo || 0);
     });
   }, [calculations, operatorFilter]);
 
@@ -5508,13 +6409,12 @@ function HistorySection({
 
 // --- Note Section ---
 
-function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: Note) => void, onDelete: (id: string) => void, t: any }) {
+function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: Omit<Note, 'id'>) => void, onDelete: (id: string) => void, t: any }) {
   const [note, setNote] = useState({ title: '', content: '' });
 
   const handleAdd = () => {
     if (!note.title || !note.content) return;
     onAdd({
-      id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       title: note.title,
       content: note.content
@@ -5566,7 +6466,16 @@ function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: 
                 </button>
               </div>
               <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">{n.content}</p>
-              <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-4 block">{new Date(n.timestamp).toLocaleString()}</p>
+              <div className="flex justify-between items-center mt-4">
+                <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase">
+                  {new Date(n.timestamp).toLocaleString()}
+                </span>
+                {n.createdByName && (
+                  <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[9px] font-black rounded uppercase tracking-wider">
+                    ✍️ {n.createdByName}
+                  </span>
+                )}
+              </div>
             </div>
           ))
         )}

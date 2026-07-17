@@ -579,38 +579,38 @@ export default function BillingSection({ calculations, language, onDownloadImage
 
                 {/* Invoice Summary Block */}
                 <div className="flex justify-end pt-2">
-                  <div className="w-80 border border-slate-300 bg-slate-50 rounded p-4 space-y-2.5 text-xs font-semibold">
-                    <div className="flex justify-between text-slate-700">
-                      <span>{language === 'bn' ? 'মোট চালানের ভলিউম:' : 'Total Shipment Count:'}</span>
-                      <span className="font-bold text-slate-900">
+                  <div className="w-96 border border-slate-300 bg-slate-50 rounded p-4 space-y-2.5 text-xs font-semibold">
+                    <div className="flex justify-between items-center text-slate-700 gap-4">
+                      <span className="whitespace-nowrap">{language === 'bn' ? 'মোট চালানের ভলিউম:' : 'Total Shipment Count:'}</span>
+                      <span className="font-bold text-slate-900 whitespace-nowrap">
                         {language === 'bn' ? `${toBengaliDigits(stats.totalChallans)} টি` : `${stats.totalChallans} Challans`}
                       </span>
                     </div>
-                    <div className="flex justify-between text-slate-700">
-                      <span>{language === 'bn' ? 'মোট নিট ওজন (KG):' : 'Total Net Weight (KG):'}</span>
-                      <span className="font-bold text-slate-900 font-mono">
+                    <div className="flex justify-between items-center text-slate-700 gap-4">
+                      <span className="whitespace-nowrap">{language === 'bn' ? 'মোট নিট ওজন (KG):' : 'Total Net Weight (KG):'}</span>
+                      <span className="font-bold text-slate-900 font-mono whitespace-nowrap">
                         {language === 'bn' ? `${toBengaliDigits(stats.netKg.toLocaleString())} কেজি` : `${stats.netKg.toLocaleString()} KG`}
                       </span>
                     </div>
-                    <div className="flex justify-between text-slate-700">
-                      <span>{language === 'bn' ? 'মোট রূপান্তরিত মন:' : 'Total Converted Yield:'}</span>
-                      <span className="font-bold text-slate-900">
+                    <div className="flex justify-between items-center text-slate-700 gap-4">
+                      <span className="whitespace-nowrap">{language === 'bn' ? 'মোট রূপান্তরিত মন:' : 'Total Converted Yield:'}</span>
+                      <span className="font-bold text-slate-900 whitespace-nowrap">
                         {language === 'bn' 
                           ? `${toBengaliDigits(statsMon)} মণ ${toBengaliDigits(statsKg)} কেজি` 
                           : `${statsMon} Mon ${statsKg} KG`}
                       </span>
                     </div>
                     {rateMode === 'custom' && (
-                      <div className="flex justify-between text-slate-700">
-                        <span>{language === 'bn' ? 'নির্ধারিত কাস্টম দর:' : 'Custom Flat Rate:'}</span>
-                        <span className="font-bold text-slate-900">
+                      <div className="flex justify-between items-center text-slate-700 gap-4">
+                        <span className="whitespace-nowrap">{language === 'bn' ? 'নির্ধারিত কাস্টম দর:' : 'Custom Flat Rate:'}</span>
+                        <span className="font-bold text-slate-900 whitespace-nowrap">
                           ৳{language === 'bn' ? toBengaliDigits(customRate) : customRate} /মণ
                         </span>
                       </div>
                     )}
-                    <div className="flex justify-between border-t border-slate-300 pt-2.5 text-slate-950 text-sm font-black uppercase">
-                      <span>{language === 'bn' ? 'সর্বমোট পরিশোধীয় বিল:' : 'Grand Total Due:'}</span>
-                      <span className="text-slate-950 font-mono text-base">
+                    <div className="flex justify-between items-center border-t border-slate-300 pt-2.5 text-slate-950 text-sm font-black uppercase gap-4">
+                      <span className="whitespace-nowrap">{language === 'bn' ? 'সর্বমোট পরিশোধীয় বিল:' : 'Grand Total Due:'}</span>
+                      <span className="text-slate-950 font-mono text-base whitespace-nowrap">
                         ৳{language === 'bn' ? toBengaliDigits(Math.round(stats.grandTotal).toLocaleString()) : Math.round(stats.grandTotal).toLocaleString()}
                       </span>
                     </div>
