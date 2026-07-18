@@ -152,38 +152,7 @@ const toBengaliDigits = (num: number | string): string => {
   return num.toString().replace(/[0-9]/g, char => englishToBengaliMap[char] || char);
 };
 
-// --- Daily sequence (Get Entry) system with resetting ---
-const recalculateDailySequences = (calcs: Calculation[]): Calculation[] => {
-  const groups: { [dateStr: string]: Calculation[] } = {};
-  
-  const calcsWithDate = calcs.map(c => {
-    const d = new Date(c.timestamp);
-    const dateStr = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-    return { ...c, dateStr };
-  });
 
-  calcsWithDate.forEach(c => {
-    if (!groups[c.dateStr]) {
-      groups[c.dateStr] = [];
-    }
-    groups[c.dateStr].push(c);
-  });
-
-  const updatedCalcsMap = new Map<string, number>();
-  Object.keys(groups).forEach(dateStr => {
-    const group = groups[dateStr];
-    // Sort oldest first (chronological order)
-    group.sort((a, b) => a.timestamp - b.timestamp);
-    group.forEach((calc, index) => {
-      updatedCalcsMap.set(calc.id, index + 1);
-    });
-  });
-
-  return calcs.map(c => ({
-    ...c,
-    getEntryNo: updatedCalcsMap.get(c.id) || 1
-  }));
-};
 
 const bidiNumberToWordBengali = (num: number): string => {
   const words = [
@@ -499,12 +468,11 @@ export default function App() {
         return (a.challanNo || 0) - (b.challanNo || 0);
       });
 
-      const sorted = recalculateDailySequences(list);
-      setCalculations(sorted);
+      setCalculations(list);
 
       // Trigger Bengali TTS speech for the newest calculated entry safely
-      if (sorted.length > 0) {
-        const latest = sorted[0];
+      if (list.length > 0) {
+        const latest = list[0];
         const isRecent = (Date.now() - latest.timestamp) < 10000; // within 10 seconds
         if (isRecent && latest.id !== lastSpokenId.current && latest.getEntryNo) {
           lastSpokenId.current = latest.id;
@@ -1661,11 +1629,19 @@ export default function App() {
       if (dateFilter === '1month') return diff <= 30 * oneDay;
       if (dateFilter === 'custom') {
         if (!customStartDate && !customEndDate) return true;
-        const calcDate = new Date(calc.timestamp);
-        const calcDateStr = calcDate.toISOString().split('T')[0];
-        if (customStartDate && calcDateStr < customStartDate) return false;
-        if (customEndDate && calcDateStr > customEndDate) return false;
-        return true;
+        let startBound = -Infinity;
+        let endBound = Infinity;
+        if (customStartDate) {
+          const [sY, sM, sD] = customStartDate.split('-').map(Number);
+          const sDate = new Date(sY, sM - 1, sD, 0, 0, 0, 0);
+          startBound = sDate.getTime();
+        }
+        if (customEndDate) {
+          const [eY, eM, eD] = customEndDate.split('-').map(Number);
+          const eDate = new Date(eY, eM - 1, eD, 23, 59, 59, 999);
+          endBound = eDate.getTime();
+        }
+        return calc.timestamp >= startBound && calc.timestamp <= endBound;
       }
       return true;
     });
@@ -1728,11 +1704,19 @@ export default function App() {
       if (dateFilter === '1month') return diff <= 30 * oneDay;
       if (dateFilter === 'custom') {
         if (!customStartDate && !customEndDate) return true;
-        const expDate = new Date(exp.timestamp);
-        const expDateStr = expDate.toISOString().split('T')[0];
-        if (customStartDate && expDateStr < customStartDate) return false;
-        if (customEndDate && expDateStr > customEndDate) return false;
-        return true;
+        let startBound = -Infinity;
+        let endBound = Infinity;
+        if (customStartDate) {
+          const [sY, sM, sD] = customStartDate.split('-').map(Number);
+          const sDate = new Date(sY, sM - 1, sD, 0, 0, 0, 0);
+          startBound = sDate.getTime();
+        }
+        if (customEndDate) {
+          const [eY, eM, eD] = customEndDate.split('-').map(Number);
+          const eDate = new Date(eY, eM - 1, eD, 23, 59, 59, 999);
+          endBound = eDate.getTime();
+        }
+        return exp.timestamp >= startBound && exp.timestamp <= endBound;
       }
       return true;
     });
@@ -3940,6 +3924,31 @@ function HomeSection({
               <button 
                 type="button" 
                 onClick={() => {
+                  const finalChallan = editingCalc.challanNo;
+                  if (!finalChallan) {
+                    alert(t.alertChallanMust);
+                    return;
+                  }
+                  const isSameLocalDate = (t1: number, t2: number) => {
+                    const d1 = new Date(t1);
+                    const d2 = new Date(t2);
+                    return d1.getFullYear() === d2.getFullYear() &&
+                           d1.getMonth() === d2.getMonth() &&
+                           d1.getDate() === d2.getDate();
+                  };
+                  const isDup = allCalculations.some(c => 
+                    !c.isDeleted &&
+                    c.id !== editingCalc.id &&
+                    isSameLocalDate(c.timestamp, editingCalc.timestamp) &&
+                    finalChallan && c.challanNo === finalChallan
+                  );
+                  if (isDup) {
+                    alert(language === 'bn' 
+                      ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
+                      : 'Duplicate Error: This Challan Number already exists for this date.');
+                    return;
+                  }
+
                   const mType = editingCalc.monType || 40;
                   const kg = editingCalc.totalKg || 0;
                   const rate = editingCalc.ratePerMon || 0;
@@ -4487,31 +4496,50 @@ function CalculatorSection({
     return { defaultGate, defaultChallanVal };
   }, [calculations, selectedTimestamp, expectedNextChallan]);
 
-  // Ensure sequence prediction updates reactively only when the date changes or defaults update
+  // Ensure sequence prediction updates reactively
   const lastSelectedDateStr = useRef('');
   useEffect(() => {
     const dStr = new Date(selectedTimestamp).toDateString();
-    if (lastSelectedDateStr.current !== dStr) {
+    const dateChanged = lastSelectedDateStr.current !== dStr;
+    if (dateChanged) {
       lastSelectedDateStr.current = dStr;
+    }
+
+    const isFormEmpty = !formData.sellerName && !formData.totalKg && !formData.ratePerMon;
+    if (dateChanged || isFormEmpty) {
       setFormData(prev => ({
         ...prev,
         challanNo: defaultChallanVal.toString(),
         getEntryNo: defaultGate.toString()
       }));
+    }
+  }, [selectedTimestamp, defaultGate, defaultChallanVal, formData.sellerName, formData.totalKg, formData.ratePerMon]);
+
+  const lastSelectedDateStrMinus = useRef('');
+  useEffect(() => {
+    const dStr = new Date(selectedTimestamp).toDateString();
+    const dateChanged = lastSelectedDateStrMinus.current !== dStr;
+    if (dateChanged) {
+      lastSelectedDateStrMinus.current = dStr;
+    }
+
+    const isMinusFormEmpty = !minusFormData.sellerName && !minusFormData.totalKg && !minusFormData.ratePerMon;
+    if (dateChanged || isMinusFormEmpty) {
       setMinusFormData(prev => ({
         ...prev,
         challanNo: defaultChallanVal.toString(),
         getEntryNo: defaultGate.toString()
       }));
     }
-  }, [selectedTimestamp, defaultGate, defaultChallanVal]);
+  }, [selectedTimestamp, defaultGate, defaultChallanVal, minusFormData.sellerName, minusFormData.totalKg, minusFormData.ratePerMon]);
 
-  // Check for pre-save duplicates (SAME date + SAME Gate Entry OR Challan No)
-  const checkDuplicate = (targetTimestamp: number, entryNo: number, challanNo: number) => {
+  // Check for pre-save duplicates (SAME date + SAME Challan No)
+  const checkDuplicate = (targetTimestamp: number, challanNo: number, excludeId?: string) => {
     return calculations.some(c => 
       !c.isDeleted &&
+      (excludeId ? c.id !== excludeId : true) &&
       isSameLocalDate(c.timestamp, targetTimestamp) &&
-      ((entryNo && c.getEntryNo === entryNo) || (challanNo && c.challanNo === challanNo))
+      challanNo && c.challanNo === challanNo
     );
   };
 
@@ -4638,11 +4666,11 @@ function CalculatorSection({
     // Check duplicate saved for date
     const finalChallan = parseInt(formData.challanNo) || 0;
     const finalGate = parseInt(formData.getEntryNo) || 0;
-    const isDup = checkDuplicate(timestamp, finalGate, finalChallan);
+    const isDup = checkDuplicate(timestamp, finalChallan);
     if (isDup) {
       alert(language === 'bn' 
-        ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই গেট এন্ট্রি/চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
-        : 'Duplicate Error: This Gate Entry/Challan Number already exists for this date.');
+        ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
+        : 'Duplicate Error: This Challan Number already exists for this date.');
       return;
     }
 
@@ -4839,11 +4867,11 @@ function CalculatorSection({
     // Check duplicate saved for date
     const finalChallan = parseInt(minusFormData.challanNo) || 0;
     const finalGate = parseInt(minusFormData.getEntryNo) || 0;
-    const isDup = checkDuplicate(timestamp, finalGate, finalChallan);
+    const isDup = checkDuplicate(timestamp, finalChallan);
     if (isDup) {
       alert(language === 'bn' 
-        ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই গেট এন্ট্রি/চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
-        : 'Duplicate Error: This Gate Entry/Challan Number already exists for this date.');
+        ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
+        : 'Duplicate Error: This Challan Number already exists for this date.');
       return;
     }
 
@@ -5271,9 +5299,38 @@ function CalculatorSection({
         
         {!isMinusMode ? (
           <>
+            {/* Top Row: Gate Entry and Challan Number side-by-side at the very top */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                  {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry No'}
+                </label>
+                <input 
+                  type="number" 
+                  placeholder="0"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                  value={formData.getEntryNo}
+                  onChange={e => setFormData({ ...formData, getEntryNo: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                  {language === 'bn' ? 'চালান নং (সম্পাদনাযোগ্য)' : 'Challan No'}
+                </label>
+                <input 
+                  type="number" 
+                  placeholder="0"
+                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
+                  value={formData.challanNo}
+                  onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
+                />
+              </div>
+            </div>
+
             {/* Compact Unified Horizontal Input Row */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end mb-6">
-              <div className="md:col-span-3">
+              <div className="md:col-span-4">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                   {t.sellerName}
                 </label>
@@ -5299,33 +5356,7 @@ function CalculatorSection({
                 />
               </div>
 
-              <div className="md:col-span-1">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
-                  {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry'}
-                </label>
-                <input 
-                  type="number" 
-                  placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
-                  value={formData.getEntryNo}
-                  onChange={e => setFormData({ ...formData, getEntryNo: e.target.value })}
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
-                  {language === 'bn' ? 'চালান নং (সম্পাদনাযোগ্য)' : 'Challan No'}
-                </label>
-                <input 
-                  type="number" 
-                  placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
-                  value={formData.challanNo}
-                  onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
-                />
-              </div>
-
-              <div className="md:col-span-2">
+              <div className="md:col-span-3">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                   {t.monSystem}
                 </label>
@@ -5338,7 +5369,7 @@ function CalculatorSection({
                       className={`flex-1 rounded text-[10px] font-black transition-all border-2 ${
                         formData.monType === type 
                           ? 'bg-green-600 text-white border-green-600 shadow-sm' 
-                          : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700'
+                          : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700'
                       }`}
                     >
                       {type}
@@ -5347,7 +5378,7 @@ function CalculatorSection({
                 </div>
               </div>
 
-              <div className="md:col-span-2">
+              <div className="md:col-span-3">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                   {t.ratePerMon}
                 </label>
@@ -5482,7 +5513,36 @@ function CalculatorSection({
           <div className="space-y-6">
             {/* Toggle bar inside for inputs of minus calculate */}
             <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-lg border border-slate-150 dark:border-slate-800 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Gate Entry & Challan Number at the very top, side-by-side */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry No'}
+                  </label>
+                  <input 
+                    type="number" 
+                    placeholder="0"
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                    value={minusFormData.getEntryNo}
+                    onChange={e => setMinusFormData({ ...minusFormData, getEntryNo: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                    {language === 'bn' ? "চালান নং (স্বয়ংক্রিয়)" : "Challan No (Automated)"}
+                  </label>
+                  <input 
+                    type="text" 
+                    className="w-full h-10 px-3 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 outline-none cursor-not-allowed opacity-80"
+                    value={minusFormData.challanNo ? `#${minusFormData.challanNo}` : '---'}
+                    disabled
+                    readOnly
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
                     {language === 'bn' ? "বিক্রেতার নাম" : "Seller Name"}
@@ -5505,18 +5565,6 @@ function CalculatorSection({
                     className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
                     value={minusFormData.totalKg}
                     onChange={e => setMinusFormData({ ...minusFormData, totalKg: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
-                    {language === 'bn' ? "চালান নং (স্বয়ংক্রিয়)" : "Challan No (Automated)"}
-                  </label>
-                  <input 
-                    type="text" 
-                    className="w-full h-10 px-3 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 outline-none cursor-not-allowed opacity-80"
-                    value={minusFormData.challanNo ? `#${minusFormData.challanNo}` : '---'}
-                    disabled
-                    readOnly
                   />
                 </div>
               </div>
@@ -6480,9 +6528,34 @@ function HistorySection({
               >
                 {language === 'bn' ? 'বাতিল' : 'Cancel'}
               </button>
-              <button 
+               <button 
                 type="button" 
                 onClick={() => {
+                  const finalChallan = editingCalc.challanNo;
+                  if (!finalChallan) {
+                    alert(t.alertChallanMust);
+                    return;
+                  }
+                  const isSameLocalDate = (t1: number, t2: number) => {
+                    const d1 = new Date(t1);
+                    const d2 = new Date(t2);
+                    return d1.getFullYear() === d2.getFullYear() &&
+                           d1.getMonth() === d2.getMonth() &&
+                           d1.getDate() === d2.getDate();
+                  };
+                  const isDup = allCalculations.some(c => 
+                    !c.isDeleted &&
+                    c.id !== editingCalc.id &&
+                    isSameLocalDate(c.timestamp, editingCalc.timestamp) &&
+                    finalChallan && c.challanNo === finalChallan
+                  );
+                  if (isDup) {
+                    alert(language === 'bn' 
+                      ? 'ডুপ্লিকেট ত্রুটি: এই তারিখে এই চালান নম্বরটি ইতিমধ্যে বিদ্যমান রয়েছে।' 
+                      : 'Duplicate Error: This Challan Number already exists for this date.');
+                    return;
+                  }
+
                   const mType = editingCalc.monType || 40;
                   const kg = editingCalc.totalKg || 0;
                   const rate = editingCalc.ratePerMon || 0;

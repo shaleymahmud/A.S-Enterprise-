@@ -133,10 +133,20 @@ export default function ExpensesSection({
       }
 
       if (dateFilter === 'custom') {
-        if (!customStartDate || !customEndDate) return true;
-        const startTS = new Date(customStartDate + 'T00:00:00').getTime();
-        const endTS = new Date(customEndDate + 'T23:59:59').getTime();
-        return exp.timestamp >= startTS && exp.timestamp <= endTS;
+        if (!customStartDate && !customEndDate) return true;
+        let startBound = -Infinity;
+        let endBound = Infinity;
+        if (customStartDate) {
+          const [sY, sM, sD] = customStartDate.split('-').map(Number);
+          const sDate = new Date(sY, sM - 1, sD, 0, 0, 0, 0);
+          startBound = sDate.getTime();
+        }
+        if (customEndDate) {
+          const [eY, eM, eD] = customEndDate.split('-').map(Number);
+          const eDate = new Date(eY, eM - 1, eD, 23, 59, 59, 999);
+          endBound = eDate.getTime();
+        }
+        return exp.timestamp >= startBound && exp.timestamp <= endBound;
       }
 
       return true; // dateFilter === 'all'
