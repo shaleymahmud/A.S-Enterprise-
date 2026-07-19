@@ -1650,10 +1650,14 @@ export default function App() {
   const searchedCalculations = useMemo(() => {
     let list = filteredCalculations;
     if (historySearchQuery.trim()) {
-      const query = historySearchQuery.toLowerCase();
-      list = filteredCalculations.filter(calc => 
-        calc.sellerName.toLowerCase().includes(query)
-      );
+      const query = historySearchQuery.toLowerCase().trim();
+      list = filteredCalculations.filter(calc => {
+        const nameMatch = calc.sellerName.toLowerCase().includes(query);
+        const challanMatch = calc.challanNo !== undefined && calc.challanNo.toString().includes(query);
+        const gateMatch = (calc.getEntryNo !== undefined && calc.getEntryNo.toString().includes(query)) ||
+                          (calc.gateEntry !== undefined && calc.gateEntry.toString().includes(query));
+        return nameMatch || challanMatch || gateMatch;
+      });
     }
     
     // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
@@ -1742,8 +1746,8 @@ export default function App() {
     }
 
     const headers = language === 'bn' 
-      ? ['তারিখ', 'চালান নং', 'বিক্রেতা নাম', 'মোট ওজন (কেজি)', 'মন ধরণ', 'রূপান্তরিত ওজন', 'দর (টাকা)', 'সর্বমোট বিল (টাকা)', 'অপারেটর']
-      : ['Date', 'Challan No', 'Seller Name', 'Total Weight (KG)', 'Mon Type', 'Converted Weight', 'Rate', 'Total Paid', 'Operator'];
+      ? ['তারিখ', 'চালান নং', 'গেট এন্ট্রি নং', 'বিক্রেতা নাম', 'মোট ওজন (কেজি)', 'মন ধরণ', 'রূপান্তরিত ওজন', 'দর (টাকা)', 'সর্বমোট বিল (টাকা)', 'অপারেটর']
+      : ['Date', 'Challan No', 'Gate Entry No', 'Seller Name', 'Total Weight (KG)', 'Mon Type', 'Converted Weight', 'Rate', 'Total Paid', 'Operator'];
 
     const rows = searchedCalculations.map(calc => {
       const monCount = Math.floor(calc.totalKg / calc.monType);
@@ -1753,9 +1757,12 @@ export default function App() {
         ? `${monCount} মন ${extraKg} কেজি` 
         : `${monCount} Mon ${extraKg} KG`;
 
+      const gateNo = calc.getEntryNo !== undefined ? calc.getEntryNo : (calc.gateEntry !== undefined ? calc.gateEntry : '---');
+
       return [
         dateStr,
         `#${calc.challanNo}`,
+        gateNo,
         calc.sellerName,
         calc.totalKg,
         calc.monType,
@@ -1797,10 +1804,18 @@ export default function App() {
     const tableRows = searchedCalculations.map(calc => {
       const monCount = Math.floor(calc.totalKg / calc.monType);
       const extraKg = calc.totalKg % calc.monType;
+      const gateVal = calc.getEntryNo !== undefined ? calc.getEntryNo : (calc.gateEntry !== undefined ? calc.gateEntry : undefined);
       return `
         <tr style="border-bottom: 1px solid #ddd; font-size: 11px;">
           <td style="padding: 8px;">${new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}</td>
-          <td style="padding: 8px; font-weight: bold; color: #b91c1c;">#${calc.challanNo}</td>
+          <td style="padding: 8px;">
+            <div style="font-weight: bold; color: #b91c1c;">#${calc.challanNo}</div>
+            ${gateVal !== undefined ? `
+              <div style="font-size: 9px; color: #4f46e5; font-weight: bold; margin-top: 2px; white-space: nowrap;">
+                GE: ${gateVal}
+              </div>
+            ` : ''}
+          </td>
           <td style="padding: 8px; font-weight: bold;">${calc.sellerName}</td>
           <td style="padding: 8px;">${calc.totalKg} KG</td>
           <td style="padding: 8px;">${calc.monType} KG</td>
@@ -1859,7 +1874,7 @@ export default function App() {
             <thead>
               <tr>
                 <th>Date</th>
-                <th>Challan No</th>
+                <th>Challan / Gate No</th>
                 <th>Seller Name</th>
                 <th>Total Weight</th>
                 <th>Mon System</th>
@@ -2679,7 +2694,9 @@ function HomeSection({
       const query = searchQuery.toLowerCase().trim();
       const matchesSearch = !query || 
         calc.sellerName.toLowerCase().includes(query) || 
-        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query));
+        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query)) ||
+        (calc.getEntryNo !== undefined && calc.getEntryNo.toString().includes(query)) ||
+        (calc.gateEntry !== undefined && calc.gateEntry.toString().includes(query));
         
       return matchesOperator && matchesSearch;
     });
@@ -2699,7 +2716,9 @@ function HomeSection({
       const query = searchQuery.toLowerCase().trim();
       return !query || 
         calc.sellerName.toLowerCase().includes(query) || 
-        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query));
+        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query)) ||
+        (calc.getEntryNo !== undefined && calc.getEntryNo.toString().includes(query)) ||
+        (calc.gateEntry !== undefined && calc.gateEntry.toString().includes(query));
     });
 
     // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
