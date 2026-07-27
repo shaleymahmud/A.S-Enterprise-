@@ -4504,6 +4504,33 @@ function CalculatorSection({
   const [previewResult, setPreviewResult] = useState<any | null>(null);
   const [isSaved, setIsSaved] = useState(false);
 
+  // Soft warning state for unsaved edits after calculation
+  const [hasCalculatedButUnsaved, setHasCalculatedButUnsaved] = useState(false);
+  const [isInputsModifiedAfterCalc, setIsInputsModifiedAfterCalc] = useState(false);
+
+  const markInputModified = () => {
+    if (hasCalculatedButUnsaved) {
+      setIsInputsModifiedAfterCalc(true);
+    }
+  };
+
+  const isSoftWarningActive = hasCalculatedButUnsaved && isInputsModifiedAfterCalc;
+
+  const getInputStyle = (baseClasses: string) => {
+    if (isSoftWarningActive) {
+      return baseClasses
+        .replace(/border-slate-[0-9]+/g, 'border-red-500')
+        .replace(/dark:border-slate-[0-9]+/g, 'dark:border-red-500')
+        .replace(/bg-slate-[0-9\/]+/g, 'bg-red-50')
+        .replace(/dark:bg-slate-[0-9\/]+/g, 'dark:bg-red-950/40')
+        .replace(/bg-white/g, 'bg-red-50')
+        .replace(/dark:bg-slate-900/g, 'dark:bg-red-950/40')
+        .replace(/focus:ring-yellow-400/g, 'focus:ring-red-500')
+        + " border-red-500 focus:ring-red-500 bg-red-50 dark:bg-red-950/40 ring-1 ring-red-500/50 shadow-[0_0_8px_rgba(239,68,68,0.25)] transition-all";
+    }
+    return baseClasses;
+  };
+
   // Minus Calculate states
   const [isMinusMode, setIsMinusMode] = useState(false);
   const [minusFormData, setMinusFormData] = useState({
@@ -4741,6 +4768,8 @@ function CalculatorSection({
 
     setPreviewResult(calculated);
     setIsSaved(false);
+    setHasCalculatedButUnsaved(true);
+    setIsInputsModifiedAfterCalc(false);
   };
 
   const handleSaveCalculation = async () => {
@@ -4838,6 +4867,8 @@ function CalculatorSection({
 
       setPreviewResult(finalizedResult);
       setIsSaved(true);
+      setHasCalculatedButUnsaved(false);
+      setIsInputsModifiedAfterCalc(false);
 
       const successMsg = language === 'bn' 
         ? 'হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
@@ -4892,6 +4923,8 @@ function CalculatorSection({
     setPreviewResult(null);
     setIsSaved(false);
     setAllowSerialBypass(false);
+    setHasCalculatedButUnsaved(false);
+    setIsInputsModifiedAfterCalc(false);
   };
 
   const handleClearMinus = () => {
@@ -4910,6 +4943,8 @@ function CalculatorSection({
     setCustomDateTime('');
     setPreviewResult(null);
     setIsSaved(false);
+    setHasCalculatedButUnsaved(false);
+    setIsInputsModifiedAfterCalc(false);
   };
 
   const handleCalculateMinus = () => {
@@ -4942,6 +4977,8 @@ function CalculatorSection({
 
     setPreviewResult(calculated);
     setIsSaved(false);
+    setHasCalculatedButUnsaved(true);
+    setIsInputsModifiedAfterCalc(false);
   };
 
   const handleSaveMinusCalculation = async () => {
@@ -5047,6 +5084,8 @@ function CalculatorSection({
 
       setPreviewResult(finalizedResult);
       setIsSaved(true);
+      setHasCalculatedButUnsaved(false);
+      setIsInputsModifiedAfterCalc(false);
 
       const successMsg = language === 'bn' 
         ? 'মাইনাস হিসাবটি সফলভাবে সফটওয়্যারে সেভ হয়ে খাতা লিস্টে যোগ হয়েছে!' 
@@ -5359,6 +5398,8 @@ function CalculatorSection({
               onClick={() => {
                 setIsMinusMode(!isMinusMode);
                 setPreviewResult(null); // Clear preview when changing modes
+                setHasCalculatedButUnsaved(false);
+                setIsInputsModifiedAfterCalc(false);
               }}
               className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all select-none active:scale-95 flex items-center gap-1.5 ${
                 isMinusMode 
@@ -5397,6 +5438,23 @@ function CalculatorSection({
         
         {!isMinusMode ? (
           <>
+            {/* Soft Warning Banner after calculation when inputs are edited */}
+            {isSoftWarningActive && (
+              <div className="mb-4 p-3 bg-red-50 dark:bg-red-950/40 border-2 border-red-500/80 dark:border-red-600 text-red-700 dark:text-red-300 rounded-xl flex items-center justify-between gap-2 text-xs font-black animate-pulse shadow-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">⚠️</span>
+                  <span className="text-red-800 dark:text-red-200 text-sm font-black">
+                    {language === 'bn' ? 'হিসাবটি সেভ করা হয়নি!' : 'Calculation is not saved!'}
+                  </span>
+                </div>
+                <span className="text-[11px] font-extrabold text-red-600 dark:text-red-400">
+                  {language === 'bn' 
+                    ? 'ইনপুট পরিবর্তন করা হয়েছে, সেভ অথবা পুনঃহিসাব করুন।' 
+                    : 'Inputs modified. Please Save or Calculate again.'}
+                </span>
+              </div>
+            )}
+
             {/* Top Row: Gate Entry and Challan Number side-by-side at the very top */}
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
@@ -5406,9 +5464,12 @@ function CalculatorSection({
                 <input 
                   type="number" 
                   placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.getEntryNo}
-                  onChange={e => setFormData({ ...formData, getEntryNo: e.target.value })}
+                  onChange={e => {
+                    setFormData({ ...formData, getEntryNo: e.target.value });
+                    markInputModified();
+                  }}
                 />
               </div>
 
@@ -5419,9 +5480,12 @@ function CalculatorSection({
                 <input 
                   type="number" 
                   placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.challanNo}
-                  onChange={e => setFormData({ ...formData, challanNo: e.target.value })}
+                  onChange={e => {
+                    setFormData({ ...formData, challanNo: e.target.value });
+                    markInputModified();
+                  }}
                 />
               </div>
             </div>
@@ -5435,9 +5499,12 @@ function CalculatorSection({
                 <input 
                   type="text" 
                   placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.sellerName}
-                  onChange={e => setFormData({ ...formData, sellerName: e.target.value })}
+                  onChange={e => {
+                    setFormData({ ...formData, sellerName: e.target.value });
+                    markInputModified();
+                  }}
                 />
               </div>
 
@@ -5448,9 +5515,12 @@ function CalculatorSection({
                 <input 
                   type="number" 
                   placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.totalKg}
-                  onChange={e => setFormData({ ...formData, totalKg: e.target.value })}
+                  onChange={e => {
+                    setFormData({ ...formData, totalKg: e.target.value });
+                    markInputModified();
+                  }}
                 />
               </div>
 
@@ -5463,11 +5533,14 @@ function CalculatorSection({
                     <button
                       key={type}
                       type="button"
-                      onClick={() => setFormData({ ...formData, monType: type as MonType })}
+                      onClick={() => {
+                        setFormData({ ...formData, monType: type as MonType });
+                        markInputModified();
+                      }}
                       className={`flex-1 rounded text-[10px] font-black transition-all border-2 ${
                         formData.monType === type 
-                          ? 'bg-green-600 text-white border-green-600 shadow-sm' 
-                          : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700'
+                          ? (isSoftWarningActive ? 'bg-red-600 text-white border-red-600 shadow-sm' : 'bg-green-600 text-white border-green-600 shadow-sm') 
+                          : (isSoftWarningActive ? 'bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800' : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700')
                       }`}
                     >
                       {type}
@@ -5483,9 +5556,12 @@ function CalculatorSection({
                 <input 
                   type="number" 
                   placeholder="0"
-                  className="w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.ratePerMon}
-                  onChange={e => setFormData({ ...formData, ratePerMon: e.target.value })}
+                  onChange={e => {
+                    setFormData({ ...formData, ratePerMon: e.target.value });
+                    markInputModified();
+                  }}
                 />
               </div>
             </div>
@@ -5609,6 +5685,23 @@ function CalculatorSection({
           </>
         ) : (
           <div className="space-y-6">
+            {/* Soft Warning Banner after calculation when inputs are edited */}
+            {isSoftWarningActive && (
+              <div className="p-3 bg-red-50 dark:bg-red-950/40 border-2 border-red-500/80 dark:border-red-600 text-red-700 dark:text-red-300 rounded-xl flex items-center justify-between gap-2 text-xs font-black animate-pulse shadow-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">⚠️</span>
+                  <span className="text-red-800 dark:text-red-200 text-sm font-black">
+                    {language === 'bn' ? 'হিসাবটি সেভ করা হয়নি!' : 'Calculation is not saved!'}
+                  </span>
+                </div>
+                <span className="text-[11px] font-extrabold text-red-600 dark:text-red-400">
+                  {language === 'bn' 
+                    ? 'ইনপুট পরিবর্তন করা হয়েছে, সেভ অথবা পুনঃহিসাব করুন।' 
+                    : 'Inputs modified. Please Save or Calculate again.'}
+                </span>
+              </div>
+            )}
+
             {/* Toggle bar inside for inputs of minus calculate */}
             <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-lg border border-slate-150 dark:border-slate-800 space-y-4">
               {/* Gate Entry & Challan Number at the very top, side-by-side */}
@@ -5620,9 +5713,12 @@ function CalculatorSection({
                   <input 
                     type="number" 
                     placeholder="0"
-                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                     value={minusFormData.getEntryNo}
-                    onChange={e => setMinusFormData({ ...minusFormData, getEntryNo: e.target.value })}
+                    onChange={e => {
+                      setMinusFormData({ ...minusFormData, getEntryNo: e.target.value });
+                      markInputModified();
+                    }}
                   />
                 </div>
 
@@ -5648,9 +5744,12 @@ function CalculatorSection({
                   <input 
                     type="text" 
                     placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
-                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                     value={minusFormData.sellerName}
-                    onChange={e => setMinusFormData({ ...minusFormData, sellerName: e.target.value })}
+                    onChange={e => {
+                      setMinusFormData({ ...minusFormData, sellerName: e.target.value });
+                      markInputModified();
+                    }}
                   />
                 </div>
                 <div>
@@ -5660,9 +5759,12 @@ function CalculatorSection({
                   <input 
                     type="number" 
                     placeholder="0"
-                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none"
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                     value={minusFormData.totalKg}
-                    onChange={e => setMinusFormData({ ...minusFormData, totalKg: e.target.value })}
+                    onChange={e => {
+                      setMinusFormData({ ...minusFormData, totalKg: e.target.value });
+                      markInputModified();
+                    }}
                   />
                 </div>
               </div>
@@ -5676,7 +5778,10 @@ function CalculatorSection({
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
-                      onClick={() => setMinusFormData({ ...minusFormData, activeInput: 'weight' })}
+                      onClick={() => {
+                        setMinusFormData({ ...minusFormData, activeInput: 'weight' });
+                        markInputModified();
+                      }}
                       className={`h-10 rounded text-xs font-bold transition-all border ${
                         minusFormData.activeInput === 'weight'
                           ? 'bg-slate-900 dark:bg-slate-800 text-white border-slate-900 dark:border-slate-750 shadow-sm'
@@ -5687,7 +5792,10 @@ function CalculatorSection({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setMinusFormData({ ...minusFormData, activeInput: 'targetPrice' })}
+                      onClick={() => {
+                        setMinusFormData({ ...minusFormData, activeInput: 'targetPrice' });
+                        markInputModified();
+                      }}
                       className={`h-10 rounded text-xs font-bold transition-all border ${
                         minusFormData.activeInput === 'targetPrice'
                           ? 'bg-slate-900 dark:bg-slate-800 text-white border-slate-900 dark:border-slate-750 shadow-sm'
@@ -5708,9 +5816,12 @@ function CalculatorSection({
                       <input
                         type="number"
                         placeholder={language === 'bn' ? "কর্তনযোগ্য ওজন লিখুন" : "e.g. 20"}
-                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white"
+                        className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
                         value={minusFormData.minusWeight}
-                        onChange={e => setMinusFormData({ ...minusFormData, minusWeight: e.target.value })}
+                        onChange={e => {
+                          setMinusFormData({ ...minusFormData, minusWeight: e.target.value });
+                          markInputModified();
+                        }}
                       />
                     </div>
                   ) : (
@@ -5721,9 +5832,12 @@ function CalculatorSection({
                       <input
                         type="number"
                         placeholder={language === 'bn' ? "কাঙ্ক্ষিত মনের দাম লিখুন" : "e.g. 140"}
-                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-emerald-600 dark:text-emerald-400 focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white"
+                        className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-emerald-600 dark:text-emerald-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
                         value={minusFormData.targetMonPrice}
-                        onChange={e => setMinusFormData({ ...minusFormData, targetMonPrice: e.target.value })}
+                        onChange={e => {
+                          setMinusFormData({ ...minusFormData, targetMonPrice: e.target.value });
+                          markInputModified();
+                        }}
                       />
                     </div>
                   )}
@@ -5740,11 +5854,14 @@ function CalculatorSection({
                       <button
                         key={type}
                         type="button"
-                        onClick={() => setMinusFormData({ ...minusFormData, monType: type as MonType })}
+                        onClick={() => {
+                          setMinusFormData({ ...minusFormData, monType: type as MonType });
+                          markInputModified();
+                        }}
                         className={`flex-1 rounded text-[10px] font-black transition-all border ${
                           minusFormData.monType === type 
-                            ? 'bg-green-600 text-white border-green-600 shadow-sm' 
-                            : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                            ? (isSoftWarningActive ? 'bg-red-600 text-white border-red-600 shadow-sm' : 'bg-green-600 text-white border-green-600 shadow-sm') 
+                            : (isSoftWarningActive ? 'bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800' : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700')
                         }`}
                       >
                         {type} KG
@@ -5760,9 +5877,12 @@ function CalculatorSection({
                   <input 
                     type="number" 
                     placeholder="0"
-                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white"
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white")}
                     value={minusFormData.ratePerMon}
-                    onChange={e => setMinusFormData({ ...minusFormData, ratePerMon: e.target.value })}
+                    onChange={e => {
+                      setMinusFormData({ ...minusFormData, ratePerMon: e.target.value });
+                      markInputModified();
+                    }}
                   />
                 </div>
               </div>
