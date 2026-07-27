@@ -310,6 +310,8 @@ const translations = {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('calculator');
+  const [isFormDirty, setIsFormDirty] = useState<boolean>(false);
+  const [clearFormSignal, setClearFormSignal] = useState<number>(0);
   const [calculations, setCalculations] = useState<Calculation[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
@@ -377,6 +379,46 @@ export default function App() {
     isDanger: false,
     onConfirm: () => {},
   });
+
+  // Browser Close Alert (beforeunload)
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isFormDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [isFormDirty]);
+
+  // Internal Navigation Guard (Tab Switching)
+  const handleTabChange = (targetTab: Tab) => {
+    if (targetTab === activeTab) return;
+
+    if (isFormDirty) {
+      setConfirmDialog({
+        isOpen: true,
+        title: language === 'bn' ? 'অসংরক্ষিত হিসাবের সতর্কতা' : 'Unsaved Changes Warning',
+        message: '⚠️ আপনি হিসাবটি সেভ করেননি! আপনি কি সেভ না করেই এই পেজ থেকে বের হতে চান?',
+        confirmText: language === 'bn' ? 'বের হয়ে যান' : 'Leave Without Saving',
+        cancelText: language === 'bn' ? 'থেকে যান (বাতিল)' : 'Stay / Cancel',
+        isDanger: true,
+        onConfirm: () => {
+          setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+          setIsFormDirty(false);
+          setClearFormSignal(prev => prev + 1);
+          setActiveTab(targetTab);
+        }
+      });
+    } else {
+      setActiveTab(targetTab);
+    }
+  };
 
   // Firebase Auth state listener
   useEffect(() => {
@@ -1995,24 +2037,24 @@ export default function App() {
             
             {/* Nav Links */}
             <nav className="hidden lg:flex items-center h-full">
-              <NavButton label={t.home} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
+              <NavButton label={t.home} active={activeTab === 'home'} onClick={() => handleTabChange('home')} />
               {userRole === 'admin' && (
                 <>
-                  <NavButton label={language === 'bn' ? 'ডিপো খরচ' : 'Depot Expenses'} active={activeTab === 'expenses'} onClick={() => setActiveTab('expenses')} />
-                  <NavButton label={language === 'bn' ? 'বিলিং হিসাব' : 'Billing Ledger'} active={activeTab === 'billing'} onClick={() => setActiveTab('billing')} />
+                  <NavButton label={language === 'bn' ? 'ডিপো খরচ' : 'Depot Expenses'} active={activeTab === 'expenses'} onClick={() => handleTabChange('expenses')} />
+                  <NavButton label={language === 'bn' ? 'বিলিং হিসাব' : 'Billing Ledger'} active={activeTab === 'billing'} onClick={() => handleTabChange('billing')} />
                 </>
               )}
-              <NavButton label={t.calculator} active={activeTab === 'calculator'} onClick={() => setActiveTab('calculator')} />
-              <NavButton label={t.history} active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
-              <NavButton label={t.note} active={activeTab === 'note'} onClick={() => setActiveTab('note')} />
-              <NavButton label={language === 'bn' ? 'এআই জিজ্ঞাসা' : 'AI Assistant'} active={activeTab === 'assistant'} onClick={() => setActiveTab('assistant')} />
-              <NavButton label={t.settings} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+              <NavButton label={t.calculator} active={activeTab === 'calculator'} onClick={() => handleTabChange('calculator')} />
+              <NavButton label={t.history} active={activeTab === 'history'} onClick={() => handleTabChange('history')} />
+              <NavButton label={t.note} active={activeTab === 'note'} onClick={() => handleTabChange('note')} />
+              <NavButton label={language === 'bn' ? 'এআই জিজ্ঞাসা' : 'AI Assistant'} active={activeTab === 'assistant'} onClick={() => handleTabChange('assistant')} />
+              <NavButton label={t.settings} active={activeTab === 'settings'} onClick={() => handleTabChange('settings')} />
             </nav>
 
             <div className="flex items-center gap-2">
               {/* Login Status badge */}
               <button 
-                onClick={() => setActiveTab('settings')}
+                onClick={() => handleTabChange('settings')}
                 className="flex items-center gap-1.5 px-3 py-1 bg-black text-white hover:bg-slate-800 text-[10px] font-black rounded shadow transition-all active:scale-95"
               >
                 <UserCheck size={12} className="text-yellow-400" />
@@ -2053,7 +2095,7 @@ export default function App() {
               <div className="lg:hidden">
                 <select 
                   value={activeTab} 
-                  onChange={(e) => setActiveTab(e.target.value as Tab)}
+                  onChange={(e) => handleTabChange(e.target.value as Tab)}
                   className="bg-black text-white text-[10px] font-black border-none rounded px-2.5 py-1.5 outline-none cursor-pointer"
                 >
                   <option value="home">{t.home}</option>
@@ -2132,6 +2174,8 @@ export default function App() {
                 userRole={userRole}
                 currentUser={currentUser}
                 currentUserEmail={currentUserEmail}
+                onDirtyChange={setIsFormDirty}
+                clearFormSignal={clearFormSignal}
               />
             </motion.div>
           )}
@@ -4401,6 +4445,8 @@ interface CalculatorProps {
   userRole?: 'admin' | 'guest' | null;
   currentUser?: string;
   currentUserEmail?: string | null;
+  onDirtyChange?: (isDirty: boolean) => void;
+  clearFormSignal?: number;
 }
 
 function CalculatorSection({ 
@@ -4415,7 +4461,9 @@ function CalculatorSection({
   setConfirmDialog,
   userRole,
   currentUser,
-  currentUserEmail
+  currentUserEmail,
+  onDirtyChange,
+  clearFormSignal
 }: CalculatorProps) {
   // Backdated and manual override states
   const [isBackdated, setIsBackdated] = useState(false);
@@ -4469,6 +4517,36 @@ function CalculatorSection({
     getEntryNo: '',
     activeInput: 'weight' as 'weight' | 'targetPrice'
   });
+
+  // Listen for clear signal from Navigation Guard
+  useEffect(() => {
+    if (clearFormSignal && clearFormSignal > 0) {
+      handleClear();
+      handleClearMinus();
+    }
+  }, [clearFormSignal]);
+
+  // Track dirty form state and notify parent
+  useEffect(() => {
+    const isStandardDirty = Boolean(
+      formData.sellerName.trim() ||
+      formData.totalKg.trim() ||
+      formData.ratePerMon.trim()
+    );
+
+    const isMinusDirty = Boolean(
+      minusFormData.sellerName.trim() ||
+      minusFormData.totalKg.trim() ||
+      minusFormData.ratePerMon.trim() ||
+      minusFormData.minusWeight.trim() ||
+      minusFormData.targetMonPrice.trim()
+    );
+
+    const isDirty = isStandardDirty || isMinusDirty;
+    if (onDirtyChange) {
+      onDirtyChange(isDirty);
+    }
+  }, [formData, minusFormData, onDirtyChange]);
 
   // Helper to compare same local calendar date
   const isSameLocalDate = (t1: number, t2: number) => {
