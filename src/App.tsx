@@ -4514,7 +4514,7 @@ function CalculatorSection({
     }
   };
 
-  const isSoftWarningActive = hasCalculatedButUnsaved && isInputsModifiedAfterCalc;
+  const isSoftWarningActive = hasCalculatedButUnsaved;
 
   const getInputStyle = (baseClasses: string) => {
     if (isSoftWarningActive) {
@@ -4526,9 +4526,9 @@ function CalculatorSection({
         .replace(/bg-white/g, 'bg-red-50')
         .replace(/dark:bg-slate-900/g, 'dark:bg-red-950/40')
         .replace(/focus:ring-yellow-400/g, 'focus:ring-red-500')
-        + " border-red-500 focus:ring-red-500 bg-red-50 dark:bg-red-950/40 ring-1 ring-red-500/50 shadow-[0_0_8px_rgba(239,68,68,0.25)] transition-all";
+        + " border-2 border-red-500 focus:ring-2 focus:ring-red-500 bg-red-50 dark:bg-red-950/40 ring-2 ring-red-500/60 shadow-md shadow-red-500/20 transition-all";
     }
-    return baseClasses;
+    return baseClasses + " shadow-sm hover:shadow-md border-slate-300 dark:border-slate-700 rounded-lg transition-all";
   };
 
   // Minus Calculate states
@@ -5447,10 +5447,10 @@ function CalculatorSection({
                     {language === 'bn' ? 'হিসাবটি সেভ করা হয়নি!' : 'Calculation is not saved!'}
                   </span>
                 </div>
-                <span className="text-[11px] font-extrabold text-red-600 dark:text-red-400">
+                <span className="text-xs font-extrabold text-red-600 dark:text-red-400">
                   {language === 'bn' 
-                    ? 'ইনপুট পরিবর্তন করা হয়েছে, সেভ অথবা পুনঃহিসাব করুন।' 
-                    : 'Inputs modified. Please Save or Calculate again.'}
+                    ? 'দয়া করে হিসাবটি সেভ অথবা ক্লিয়ার করুন।' 
+                    : 'Please Save or Clear the calculation.'}
                 </span>
               </div>
             )}
@@ -5458,13 +5458,13 @@ function CalculatorSection({
             {/* Top Row: Gate Entry and Challan Number side-by-side at the very top */}
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
-                <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                   {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry No'}
                 </label>
                 <input 
                   type="number" 
                   placeholder="0"
-                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
+                  className={getInputStyle("w-full h-11 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.getEntryNo}
                   onChange={e => {
                     setFormData({ ...formData, getEntryNo: e.target.value });
@@ -5474,13 +5474,13 @@ function CalculatorSection({
               </div>
 
               <div>
-                <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                   {language === 'bn' ? 'চালান নং (সম্পাদনাযোগ্য)' : 'Challan No'}
                 </label>
                 <input 
                   type="number" 
                   placeholder="0"
-                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
+                  className={getInputStyle("w-full h-11 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.challanNo}
                   onChange={e => {
                     setFormData({ ...formData, challanNo: e.target.value });
@@ -5493,13 +5493,13 @@ function CalculatorSection({
             {/* Compact Unified Horizontal Input Row */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end mb-6">
               <div className="md:col-span-4">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                   {t.sellerName}
                 </label>
                 <input 
                   type="text" 
                   placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
-                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
+                  className={getInputStyle("w-full h-11 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.sellerName}
                   onChange={e => {
                     setFormData({ ...formData, sellerName: e.target.value });
@@ -5509,13 +5509,13 @@ function CalculatorSection({
               </div>
 
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                   {t.totalWeight}
                 </label>
                 <input 
                   type="number" 
                   placeholder="0"
-                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
+                  className={getInputStyle("w-full h-11 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.totalKg}
                   onChange={e => {
                     setFormData({ ...formData, totalKg: e.target.value });
@@ -5525,7 +5525,7 @@ function CalculatorSection({
               </div>
 
               <div className="md:col-span-3">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                   {t.monSystem}
                 </label>
                 <div className="flex gap-1 h-11">
@@ -5537,10 +5537,10 @@ function CalculatorSection({
                         setFormData({ ...formData, monType: type as MonType });
                         markInputModified();
                       }}
-                      className={`flex-1 rounded text-[10px] font-black transition-all border-2 ${
+                      className={`flex-1 rounded-lg text-[10px] font-black transition-all border-2 ${
                         formData.monType === type 
-                          ? (isSoftWarningActive ? 'bg-red-600 text-white border-red-600 shadow-sm' : 'bg-green-600 text-white border-green-600 shadow-sm') 
-                          : (isSoftWarningActive ? 'bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800' : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700')
+                          ? (isSoftWarningActive ? 'bg-red-600 text-white border-red-600 shadow-md shadow-red-500/20' : 'bg-green-600 text-white border-green-600 shadow-sm') 
+                          : (isSoftWarningActive ? 'bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-slate-400 shadow-sm')
                       }`}
                     >
                       {type}
@@ -5550,13 +5550,13 @@ function CalculatorSection({
               </div>
 
               <div className="md:col-span-3">
-                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                   {t.ratePerMon}
                 </label>
                 <input 
                   type="number" 
                   placeholder="0"
-                  className={getInputStyle("w-full h-11 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
+                  className={getInputStyle("w-full h-11 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                   value={formData.ratePerMon}
                   onChange={e => {
                     setFormData({ ...formData, ratePerMon: e.target.value });
@@ -5567,7 +5567,7 @@ function CalculatorSection({
             </div>
 
             {/* Backdated Entry Toggle/Checkbox */}
-            <div className="mb-4 bg-slate-50 dark:bg-slate-900/60 p-3.5 rounded-xl border border-slate-150 dark:border-slate-800 flex items-center justify-between">
+            <div className="mb-4 bg-slate-50 dark:bg-slate-900/60 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between shadow-sm">
               <label className="flex items-center gap-2.5 cursor-pointer select-none">
                 <input 
                   type="checkbox" 
@@ -5588,10 +5588,10 @@ function CalculatorSection({
                   className="w-4 h-4 rounded text-yellow-500 focus:ring-yellow-400 border-slate-300 dark:border-slate-700 cursor-pointer"
                 />
                 <div>
-                  <span className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                  <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-slate-100 uppercase tracking-wider">
                     {language === 'bn' ? 'ব্যাকডেটেড এন্ট্রি (Backdated Entry)' : 'Backdated Entry'}
                   </span>
-                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-0.5">
+                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase mt-0.5">
                     {language === 'bn' ? 'অতীতের কোনো তারিখ ও সময়ে খাতার এন্ট্রি যুক্ত করার জন্য এটি সিলেক্ট করুন' : 'Enable to record this entry with a past date and time'}
                   </p>
                 </div>
@@ -5602,23 +5602,23 @@ function CalculatorSection({
             {isBackdated && (
               <div className="bg-yellow-500/5 dark:bg-yellow-500/2 p-4 rounded-xl border border-yellow-500/20 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4 animate-fadeIn text-left">
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? 'তারিখ নির্বাচন করুন' : 'Select Date'}
                   </label>
                   <input 
                     type="date" 
-                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer shadow-sm hover:shadow-md transition-all"
                     value={dateValue}
                     onChange={e => handleDateChange(e.target.value)}
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? 'সময় নির্বাচন করুন' : 'Select Time'}
                   </label>
                   <input 
                     type="time" 
-                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer shadow-sm hover:shadow-md transition-all"
                     value={timeValue}
                     onChange={e => handleTimeChange(e.target.value)}
                   />
@@ -5703,17 +5703,17 @@ function CalculatorSection({
             )}
 
             {/* Toggle bar inside for inputs of minus calculate */}
-            <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-lg border border-slate-150 dark:border-slate-800 space-y-4">
+            <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-lg border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm">
               {/* Gate Entry & Challan Number at the very top, side-by-side */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? 'গেট এন্ট্রি নং' : 'Gate Entry No'}
                   </label>
                   <input 
                     type="number" 
                     placeholder="0"
-                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                     value={minusFormData.getEntryNo}
                     onChange={e => {
                       setMinusFormData({ ...minusFormData, getEntryNo: e.target.value });
@@ -5723,12 +5723,12 @@ function CalculatorSection({
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? "চালান নং (স্বয়ংক্রিয়)" : "Challan No (Automated)"}
                   </label>
                   <input 
                     type="text" 
-                    className="w-full h-10 px-3 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 outline-none cursor-not-allowed opacity-80"
+                    className="w-full h-10 px-3 bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-rose-600 dark:text-rose-400 outline-none cursor-not-allowed opacity-80 shadow-sm"
                     value={minusFormData.challanNo ? `#${minusFormData.challanNo}` : '---'}
                     disabled
                     readOnly
@@ -5738,13 +5738,13 @@ function CalculatorSection({
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? "বিক্রেতার নাম" : "Seller Name"}
                   </label>
                   <input 
                     type="text" 
                     placeholder={language === 'bn' ? "বিক্রেতার নাম লিখুন" : "e.g. Monnaf"}
-                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                     value={minusFormData.sellerName}
                     onChange={e => {
                       setMinusFormData({ ...minusFormData, sellerName: e.target.value });
@@ -5753,13 +5753,13 @@ function CalculatorSection({
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? "মোট ওজন (কেজি)" : "Total Weight (KG)"}
                   </label>
                   <input 
                     type="number" 
                     placeholder="0"
-                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                     value={minusFormData.totalKg}
                     onChange={e => {
                       setMinusFormData({ ...minusFormData, totalKg: e.target.value });
@@ -5772,7 +5772,7 @@ function CalculatorSection({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200 dark:border-slate-800">
                 {/* Switch between weight deduction and target price */}
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-2 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? "কর্তন পদ্ধতি নির্বাচন করুন" : "Select Deduction Input Mode"}
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -5782,10 +5782,10 @@ function CalculatorSection({
                         setMinusFormData({ ...minusFormData, activeInput: 'weight' });
                         markInputModified();
                       }}
-                      className={`h-10 rounded text-xs font-bold transition-all border ${
+                      className={`h-10 rounded-lg text-xs font-bold transition-all border ${
                         minusFormData.activeInput === 'weight'
                           ? 'bg-slate-900 dark:bg-slate-800 text-white border-slate-900 dark:border-slate-750 shadow-sm'
-                          : 'bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300'
+                          : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-slate-400 shadow-sm'
                       }`}
                     >
                       {language === 'bn' ? "কর্তন কেজি সরাসরি" : "Minus Weight (KG)"}
@@ -5796,10 +5796,10 @@ function CalculatorSection({
                         setMinusFormData({ ...minusFormData, activeInput: 'targetPrice' });
                         markInputModified();
                       }}
-                      className={`h-10 rounded text-xs font-bold transition-all border ${
+                      className={`h-10 rounded-lg text-xs font-bold transition-all border ${
                         minusFormData.activeInput === 'targetPrice'
                           ? 'bg-slate-900 dark:bg-slate-800 text-white border-slate-900 dark:border-slate-750 shadow-sm'
-                          : 'bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300'
+                          : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-slate-400 shadow-sm'
                       }`}
                     >
                       {language === 'bn' ? "কাঙ্ক্ষিত মনের দাম" : "Target Mon Price"}
@@ -5810,13 +5810,13 @@ function CalculatorSection({
                 <div>
                   {minusFormData.activeInput === 'weight' ? (
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-2 block">
+                      <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                         {language === 'bn' ? "কর্তন কেজি" : "Minus Weight (KG)"}
                       </label>
                       <input
                         type="number"
                         placeholder={language === 'bn' ? "কর্তনযোগ্য ওজন লিখুন" : "e.g. 20"}
-                        className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
+                        className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-rose-600 dark:text-rose-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
                         value={minusFormData.minusWeight}
                         onChange={e => {
                           setMinusFormData({ ...minusFormData, minusWeight: e.target.value });
@@ -5826,13 +5826,13 @@ function CalculatorSection({
                     </div>
                   ) : (
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-2 block">
+                      <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                         {language === 'bn' ? "কাঙ্ক্ষিত মনের দাম" : "Target Mon Price (৳)"}
                       </label>
                       <input
                         type="number"
                         placeholder={language === 'bn' ? "কাঙ্ক্ষিত মনের দাম লিখুন" : "e.g. 140"}
-                        className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black text-emerald-600 dark:text-emerald-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
+                        className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-emerald-600 dark:text-emerald-400 focus:ring-2 focus:ring-yellow-400 outline-none")}
                         value={minusFormData.targetMonPrice}
                         onChange={e => {
                           setMinusFormData({ ...minusFormData, targetMonPrice: e.target.value });
@@ -5846,7 +5846,7 @@ function CalculatorSection({
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200 dark:border-slate-800">
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? "মন সিস্টেম নির্বাচন" : "Mon System Selection"}
                   </label>
                   <div className="flex gap-1 h-10">
@@ -5858,10 +5858,10 @@ function CalculatorSection({
                           setMinusFormData({ ...minusFormData, monType: type as MonType });
                           markInputModified();
                         }}
-                        className={`flex-1 rounded text-[10px] font-black transition-all border ${
+                        className={`flex-1 rounded-lg text-[10px] font-black transition-all border ${
                           minusFormData.monType === type 
-                            ? (isSoftWarningActive ? 'bg-red-600 text-white border-red-600 shadow-sm' : 'bg-green-600 text-white border-green-600 shadow-sm') 
-                            : (isSoftWarningActive ? 'bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800' : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700')
+                            ? (isSoftWarningActive ? 'bg-red-600 text-white border-red-600 shadow-md shadow-red-500/20' : 'bg-green-600 text-white border-green-600 shadow-sm') 
+                            : (isSoftWarningActive ? 'bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-slate-400 shadow-sm')
                         }`}
                       >
                         {type} KG
@@ -5871,13 +5871,13 @@ function CalculatorSection({
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase ml-1 mb-1 block">
+                  <label className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-slate-100 uppercase ml-1 mb-1.5 block">
                     {language === 'bn' ? "নির্ধারিত দর (প্রতি মণ)" : "Regular Price per Mon (৳)"}
                   </label>
                   <input 
                     type="number" 
                     placeholder="0"
-                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded text-xs font-black focus:ring-2 focus:ring-yellow-400 outline-none text-slate-900 dark:text-white")}
+                    className={getInputStyle("w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-black text-slate-900 dark:text-white focus:ring-2 focus:ring-yellow-400 outline-none")}
                     value={minusFormData.ratePerMon}
                     onChange={e => {
                       setMinusFormData({ ...minusFormData, ratePerMon: e.target.value });
