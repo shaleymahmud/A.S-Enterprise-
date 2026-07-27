@@ -1671,17 +1671,18 @@ export default function App() {
 
   const stats = useMemo(() => {
     return filteredCalculations.reduce((acc, curr) => {
-      const netKg = curr.isMinusCalculated && curr.deductedWeight !== undefined 
-        ? Math.max(0, curr.totalKg - curr.deductedWeight) 
-        : curr.totalKg;
+      const deduction = (curr.isMinusCalculated && curr.deductedWeight !== undefined)
+        ? curr.deductedWeight
+        : (curr.deductedWeight !== undefined && curr.deductedWeight > 0 ? curr.deductedWeight : 0);
+      const netKg = Math.max(0, curr.totalKg - deduction);
       const actualBilledMon = netKg / curr.monType;
       const businessMon = netKg / 41; // 41 KG = 1 Mon business standard
       const gainMon = businessMon - actualBilledMon;
       const gainProfit = gainMon * curr.ratePerMon;
 
       return {
-        totalKg: acc.totalKg + curr.totalKg,
-        totalMon: acc.totalMon + curr.totalMon,
+        totalKg: acc.totalKg + netKg,
+        totalMon: acc.totalMon + actualBilledMon,
         totalPrice: acc.totalPrice + curr.totalPrice,
         totalBusinessMon: acc.totalBusinessMon + businessMon,
         weightGainProfit: acc.weightGainProfit + gainProfit
