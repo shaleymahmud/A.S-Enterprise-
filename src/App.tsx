@@ -118,7 +118,7 @@ interface Note {
 }
 
 type Tab = 'home' | 'calculator' | 'history' | 'expenses' | 'note' | 'assistant' | 'settings' | 'billing';
-type DateFilter = 'today' | 'yesterday' | '7days' | '1month' | 'custom';
+type DateFilter = 'all' | 'today' | 'yesterday' | '7days' | '1month' | 'custom';
 
 interface ReceiptVisibility {
   sellerName: boolean;
@@ -150,6 +150,38 @@ const toBengaliDigits = (num: number | string): string => {
     '5': '৫', '6': '৬', '7': '৭', '8': '৮', '9': '৯'
   };
   return num.toString().replace(/[0-9]/g, char => englishToBengaliMap[char] || char);
+};
+
+// Helper function to sort calculation arrays by Date (Descending) and then Gate Entry Number (Descending, numerically)
+const getGateEntryNumber = (calc: Calculation): number => {
+  const rawVal = calc.getEntryNo !== undefined && calc.getEntryNo !== null ? calc.getEntryNo : calc.gateEntry;
+  if (rawVal === undefined || rawVal === null) return 0;
+  const parsed = parseInt(String(rawVal), 10);
+  return isNaN(parsed) ? 0 : parsed;
+};
+
+const sortCalculations = (a: Calculation, b: Calculation): number => {
+  // 1. Group/Sort by Date (Descending - newest dates at the top)
+  const dateA = new Date(a.timestamp).setHours(0, 0, 0, 0);
+  const dateB = new Date(b.timestamp).setHours(0, 0, 0, 0);
+
+  if (dateB !== dateA) {
+    return dateB - dateA; // Newest calendar date first
+  }
+
+  // 2. For records sharing the exact same Date, sort numerically by gateEntry (Descending - highest to lowest)
+  const gateA = getGateEntryNumber(a);
+  const gateB = getGateEntryNumber(b);
+
+  if (gateB !== gateA) {
+    return gateB - gateA; // Descending gate entry number
+  }
+
+  // 3. Fallback: exact timestamp descending, then challanNo descending
+  if (b.timestamp !== a.timestamp) {
+    return b.timestamp - a.timestamp;
+  }
+  return (b.challanNo || 0) - (a.challanNo || 0);
 };
 
 
@@ -502,13 +534,8 @@ export default function App() {
         list.push({ ...docSnap.data(), id: docSnap.id } as Calculation);
       });
       
-      // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
-      list.sort((a, b) => {
-        if (b.timestamp !== a.timestamp) {
-          return b.timestamp - a.timestamp;
-        }
-        return (a.challanNo || 0) - (b.challanNo || 0);
-      });
+      // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
+      list.sort(sortCalculations);
 
       setCalculations(list);
 
@@ -1657,6 +1684,7 @@ export default function App() {
     const oneDay = 24 * 60 * 60 * 1000;
 
     return scopedCalculations.filter(calc => {
+      if (dateFilter === 'all') return true;
       const diff = now - calc.timestamp;
       if (dateFilter === 'today') {
         const startOfDay = new Date().setHours(0, 0, 0, 0);
@@ -1694,21 +1722,16 @@ export default function App() {
     if (historySearchQuery.trim()) {
       const query = historySearchQuery.toLowerCase().trim();
       list = filteredCalculations.filter(calc => {
-        const nameMatch = calc.sellerName.toLowerCase().includes(query);
-        const challanMatch = calc.challanNo !== undefined && calc.challanNo.toString().includes(query);
-        const gateMatch = (calc.getEntryNo !== undefined && calc.getEntryNo.toString().includes(query)) ||
-                          (calc.gateEntry !== undefined && calc.gateEntry.toString().includes(query));
+        const nameMatch = (calc.sellerName || '').toLowerCase().includes(query);
+        const challanMatch = calc.challanNo !== undefined && calc.challanNo !== null && calc.challanNo.toString().includes(query);
+        const gateMatch = (calc.getEntryNo !== undefined && calc.getEntryNo !== null && calc.getEntryNo.toString().includes(query)) ||
+                          (calc.gateEntry !== undefined && calc.gateEntry !== null && calc.gateEntry.toString().includes(query));
         return nameMatch || challanMatch || gateMatch;
       });
     }
     
-    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
-    return [...list].sort((a, b) => {
-      if (b.timestamp !== a.timestamp) {
-        return b.timestamp - a.timestamp;
-      }
-      return (a.challanNo || 0) - (b.challanNo || 0);
-    });
+    // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
+    return [...list].sort(sortCalculations);
   }, [filteredCalculations, historySearchQuery]);
 
   const stats = useMemo(() => {
@@ -1737,6 +1760,7 @@ export default function App() {
     const oneDay = 24 * 60 * 60 * 1000;
 
     return expenses.filter(exp => {
+      if (dateFilter === 'all') return true;
       const diff = now - exp.timestamp;
       if (dateFilter === 'today') {
         const startOfDay = new Date().setHours(0, 0, 0, 0);
@@ -2183,7 +2207,7 @@ export default function App() {
             <motion.div key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-4">
                 <div className="flex bg-white dark:bg-slate-900 p-1 rounded shadow-sm border border-slate-200 dark:border-slate-800">
-                  {(['today', 'yesterday', '7days', '1month'] as DateFilter[]).map((f) => (
+                  {(['all', 'today', 'yesterday', '7days', '1month'] as DateFilter[]).map((f) => (
                     <button
                       key={f}
                       onClick={() => setDateFilter(f)}
@@ -2191,7 +2215,8 @@ export default function App() {
                         dateFilter === f ? 'bg-yellow-400 text-black shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'
                       }`}
                     >
-                      {f === 'today' ? (language === 'bn' ? 'আজ' : 'Today') 
+                      {f === 'all' ? (language === 'bn' ? 'সব' : 'All')
+                       : f === 'today' ? (language === 'bn' ? 'আজ' : 'Today') 
                        : f === 'yesterday' ? (language === 'bn' ? 'গতকাল' : 'Yesterday') 
                        : f === '7days' ? (language === 'bn' ? '৭ দিন' : '7 Days') 
                        : (language === 'bn' ? '১ মাস' : '1 Month')}
@@ -2746,13 +2771,8 @@ function HomeSection({
       return matchesOperator && matchesSearch;
     });
 
-    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
-    return list.sort((a, b) => {
-      if (b.timestamp !== a.timestamp) {
-        return b.timestamp - a.timestamp;
-      }
-      return (a.challanNo || 0) - (b.challanNo || 0);
-    });
+    // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
+    return list.sort(sortCalculations);
   }, [calculations, searchQuery, operatorFilter]);
 
   // Filter deleted calculations based on search query
@@ -2766,13 +2786,8 @@ function HomeSection({
         (calc.gateEntry !== undefined && calc.gateEntry.toString().includes(query));
     });
 
-    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
-    return list.sort((a, b) => {
-      if (b.timestamp !== a.timestamp) {
-        return b.timestamp - a.timestamp;
-      }
-      return (a.challanNo || 0) - (b.challanNo || 0);
-    });
+    // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
+    return list.sort(sortCalculations);
   }, [deletedCalculations, searchQuery]);
 
   return (
@@ -2839,7 +2854,7 @@ function HomeSection({
           )}
 
           <div className="flex bg-white dark:bg-slate-900 p-1 rounded shadow-sm border border-slate-200 dark:border-slate-800">
-            {(['today', 'yesterday', '7days', '1month', 'custom'] as DateFilter[]).map((f) => (
+            {(['all', 'today', 'yesterday', '7days', '1month', 'custom'] as DateFilter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setDateFilter(f)}
@@ -2847,7 +2862,8 @@ function HomeSection({
                   dateFilter === f ? 'bg-yellow-400 text-black shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'
                 }`}
               >
-                {f === 'today' ? (language === 'bn' ? 'আজ' : 'Today') 
+                {f === 'all' ? (language === 'bn' ? 'সব' : 'All')
+                 : f === 'today' ? (language === 'bn' ? 'আজ' : 'Today') 
                  : f === 'yesterday' ? (language === 'bn' ? 'গতকাল' : 'Yesterday') 
                  : f === '7days' ? (language === 'bn' ? '৭ দিন' : '7 Days') 
                  : f === '1month' ? (language === 'bn' ? '১ মাস' : '1 Month')
@@ -6285,13 +6301,8 @@ function HistorySection({
       });
     }
 
-    // Dynamic Sort: Primary (timestamp descending), Secondary (challanNo ascending)
-    return [...list].sort((a, b) => {
-      if (b.timestamp !== a.timestamp) {
-        return b.timestamp - a.timestamp;
-      }
-      return (a.challanNo || 0) - (b.challanNo || 0);
-    });
+    // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
+    return [...list].sort(sortCalculations);
   }, [calculations, operatorFilter]);
 
   return (
