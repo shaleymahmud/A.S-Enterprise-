@@ -2763,10 +2763,10 @@ function HomeSection({
       
       const query = searchQuery.toLowerCase().trim();
       const matchesSearch = !query || 
-        calc.sellerName.toLowerCase().includes(query) || 
-        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query)) ||
-        (calc.getEntryNo !== undefined && calc.getEntryNo.toString().includes(query)) ||
-        (calc.gateEntry !== undefined && calc.gateEntry.toString().includes(query));
+        (calc.sellerName || '').toLowerCase().includes(query) || 
+        (calc.challanNo !== undefined && calc.challanNo !== null && calc.challanNo.toString().includes(query)) ||
+        (calc.getEntryNo !== undefined && calc.getEntryNo !== null && calc.getEntryNo.toString().includes(query)) ||
+        (calc.gateEntry !== undefined && calc.gateEntry !== null && calc.gateEntry.toString().includes(query));
         
       return matchesOperator && matchesSearch;
     });
@@ -2780,10 +2780,10 @@ function HomeSection({
     const list = deletedCalculations.filter(calc => {
       const query = searchQuery.toLowerCase().trim();
       return !query || 
-        calc.sellerName.toLowerCase().includes(query) || 
-        (calc.challanNo !== undefined && calc.challanNo.toString().includes(query)) ||
-        (calc.getEntryNo !== undefined && calc.getEntryNo.toString().includes(query)) ||
-        (calc.gateEntry !== undefined && calc.gateEntry.toString().includes(query));
+        (calc.sellerName || '').toLowerCase().includes(query) || 
+        (calc.challanNo !== undefined && calc.challanNo !== null && calc.challanNo.toString().includes(query)) ||
+        (calc.getEntryNo !== undefined && calc.getEntryNo !== null && calc.getEntryNo.toString().includes(query)) ||
+        (calc.gateEntry !== undefined && calc.gateEntry !== null && calc.gateEntry.toString().includes(query));
     });
 
     // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
@@ -4852,7 +4852,7 @@ function CalculatorSection({
     const softDuplicate = calculations.some(c => 
       c.timestamp >= startOfDay &&
       c.timestamp < startOfDay + 86400000 &&
-      c.sellerName.trim().toLowerCase() === calculated.sellerName.trim().toLowerCase() && 
+      (c.sellerName || '').trim().toLowerCase() === calculated.sellerName.trim().toLowerCase() && 
       c.totalKg === calculated.totalKg
     );
 
@@ -5039,7 +5039,7 @@ function CalculatorSection({
     const softDuplicate = calculations.some(c => 
       c.timestamp >= startOfDay &&
       c.timestamp < startOfDay + 86400000 &&
-      c.sellerName.trim().toLowerCase() === minusFormData.sellerName.trim().toLowerCase() && 
+      (c.sellerName || '').trim().toLowerCase() === minusFormData.sellerName.trim().toLowerCase() && 
       c.totalKg === parseFloat(minusFormData.totalKg)
     );
 
