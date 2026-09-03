@@ -31,7 +31,15 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Zap,
-  AlertTriangle
+  AlertTriangle,
+  Send,
+  Bell,
+  CheckCircle2,
+  XCircle,
+  X,
+  ExternalLink,
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import AssistantSection from './components/AssistantSection';
@@ -755,6 +763,83 @@ export default function App() {
     return (!isNaN(latestChallanNum) ? latestChallanNum : defaultChallan) + 1;
   }, [masterChallanNo, calculations, defaultChallan]);
 
+  // --- Telegram Live Notification Utility (via Serverless API) ---
+  const sendTelegramLiveNotification = async (entry: {
+    sellerName?: string;
+    challanNo: number | string;
+    totalKg: number;
+    totalPrice: number;
+    operatorName?: string;
+    isTest?: boolean;
+  }): Promise<{ success: boolean; error?: string; rawError?: string; details?: string }> => {
+    try {
+      const totalKgNum = typeof entry.totalKg === 'number' ? entry.totalKg : parseFloat(entry.totalKg as any) || 0;
+      const formattedBill = typeof entry.totalPrice === 'number'
+        ? entry.totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : entry.totalPrice;
+      const formattedWeight = totalKgNum.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      
+      const monCount = Math.floor(totalKgNum / 40);
+      const extraKg = Math.round((totalKgNum % 40) * 10) / 10;
+      const monStr = monCount > 0
+        ? (extraKg > 0 ? `${monCount} মণ ${extraKg} কেজি` : `${monCount} মণ`)
+        : `${extraKg} কেজি`;
+
+      const weightWithMon = `${formattedWeight} কেজি (${monStr})`;
+      const seller = (entry.sellerName || 'N/A').trim();
+
+      const messageText = entry.isTest
+        ? `🔔 *টেস্ট টেলিগ্রাম নোটিফিকেশন*
+👤 *বিক্রেতা:* ${seller}
+📝 *মেমো নং:* #${entry.challanNo}
+⚖️ *মোট ওজন:* ${weightWithMon}
+💰 *মোট বিল:* ৳${formattedBill}
+👨‍💼 *অপারেটর:* ${entry.operatorName || 'Admin'}
+⚡ *স্ট্যাটাস:* সার্ভারলেস টেলিগ্রাম নোটিফিকেশন সফলভাবে যাচাই করা হয়েছে!`
+        : `🔔 *নতুন খড়ি ক্রয় হিসাব সংরক্ষিত হয়েছে!*
+👤 *বিক্রেতা:* ${seller}
+📝 *চালান/মেমো নং:* #${entry.challanNo}
+⚖️ *মোট ওজন:* ${weightWithMon}
+💰 *মোট বিল:* ৳${formattedBill}
+👨‍💼 *অপারেটর:* ${entry.operatorName || 'Admin'}
+
+_এ. এস এন্টারপ্রাইজ_`;
+
+      const response = await fetch('/api/telegram', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: messageText,
+          parse_mode: 'Markdown'
+        })
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        const errorMsg = data?.error || `HTTP ${response.status}`;
+        return {
+          success: false,
+          error: errorMsg,
+          rawError: JSON.stringify(data)
+        };
+      }
+
+      return {
+        success: true,
+        details: data?.message || 'Delivered to Telegram via /api/telegram'
+      };
+    } catch (err: any) {
+      console.warn("Telegram live notification error (non-fatal):", err);
+      return {
+        success: false,
+        error: err?.message || 'Network error connecting to /api/telegram'
+      };
+    }
+  };
+
   // --- Handlers ---
 
   const addCalculation = async (calc: Omit<Calculation, 'createdBy'>): Promise<number | false> => {
@@ -850,6 +935,21 @@ export default function App() {
           createdBy: currentUserEmail || currentUser || 'Guest'
         });
       });
+
+      // 5. Send Telegram live notification (wrapped in try...catch so it never disrupts Firestore)
+      try {
+        sendTelegramLiveNotification({
+          sellerName: newCalc.sellerName,
+          challanNo: assignedChallanNo,
+          totalKg: newCalc.totalKg,
+          totalPrice: newCalc.totalPrice,
+          operatorName: newCalc.createdByName
+        }).catch((telegramErr) => {
+          console.warn("Telegram live notification background error:", telegramErr);
+        });
+      } catch (telegramCatchErr) {
+        console.warn("Error initiating Telegram notification:", telegramCatchErr);
+      }
 
       return assignedChallanNo;
     } catch (err: any) {
@@ -2361,6 +2461,16 @@ export default function App() {
                 onRequestEmergencyTopUp={requestEmergencyTopUp}
                 userTodayEmergencyCount={userTodayEmergencyCount}
                 isEmergencyLoading={isEmergencyLoading}
+                onTestTelegramNotification={async () => {
+                  return await sendTelegramLiveNotification({
+                    sellerName: language === 'bn' ? 'টেস্ট বিক্রেতা (পরীক্ষামূলক)' : 'Test Seller (Verification)',
+                    challanNo: expectedNextChallan,
+                    totalKg: 500,
+                    totalPrice: 25000,
+                    operatorName: currentUser || 'Admin',
+                    isTest: true
+                  });
+                }}
               />
             </motion.div>
           )}
@@ -2975,6 +3085,7 @@ interface HomeSectionProps {
   onRequestEmergencyTopUp?: () => Promise<boolean>;
   userTodayEmergencyCount?: number;
   isEmergencyLoading?: boolean;
+  onTestTelegramNotification?: () => Promise<{ success: boolean; error?: string; rawError?: string; details?: string }>;
 }
 
 function HomeSection({ 
@@ -3015,7 +3126,8 @@ function HomeSection({
   onSaveEmergencySettings,
   onRequestEmergencyTopUp,
   userTodayEmergencyCount = 0,
-  isEmergencyLoading = false
+  isEmergencyLoading = false,
+  onTestTelegramNotification
 }: HomeSectionProps) {
   const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger' | 'userNotes' | 'adminSettings'>('active');
   const [cashLedgerSubTab, setCashLedgerSubTab] = useState<'active' | 'trash'>('active');
@@ -3027,6 +3139,23 @@ function HomeSection({
   const [operatorFilter, setOperatorFilter] = useState('ALL');
   const [adminEmergencyAmt, setAdminEmergencyAmt] = useState<string>('');
   const [adminEmergencyLim, setAdminEmergencyLim] = useState<string>('');
+  const [telegramTestStatus, setTelegramTestStatus] = useState<{ loading: boolean; message?: string; success?: boolean } | null>(null);
+  const [telegramToast, setTelegramToast] = useState<{
+    id: string;
+    type: 'success' | 'error' | 'loading';
+    title: string;
+    message: string;
+    details?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (telegramToast && telegramToast.type !== 'loading') {
+      const timer = setTimeout(() => {
+        setTelegramToast(null);
+      }, 7500);
+      return () => clearTimeout(timer);
+    }
+  }, [telegramToast]);
 
   const [selectedCalcIds, setSelectedCalcIds] = useState<string[]>([]);
 
@@ -3089,6 +3218,102 @@ function HomeSection({
 
   return (
     <div className="space-y-6">
+      {/* Floating Telegram Live Toast Notification */}
+      <AnimatePresence>
+        {telegramToast && (
+          <motion.div
+            key={telegramToast.id}
+            initial={{ opacity: 0, y: -25, scale: 0.94 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.94 }}
+            transition={{ type: "spring", stiffness: 450, damping: 32 }}
+            className={`fixed top-5 right-5 z-[99999] max-w-md w-[calc(100vw-2.5rem)] sm:w-[440px] shadow-2xl rounded-2xl overflow-hidden border backdrop-blur-xl ${
+              telegramToast.type === 'success'
+                ? 'bg-slate-900/95 text-white border-emerald-500/60 ring-1 ring-emerald-500/20 shadow-emerald-500/10'
+                : telegramToast.type === 'error'
+                ? 'bg-slate-900/95 text-white border-rose-500/60 ring-1 ring-rose-500/20 shadow-rose-500/10'
+                : 'bg-slate-900/95 text-white border-sky-500/60 ring-1 ring-sky-500/20 shadow-sky-500/10'
+            }`}
+          >
+            {/* Top accent bar */}
+            <div className={`h-1.5 w-full ${
+              telegramToast.type === 'success' 
+                ? 'bg-gradient-to-r from-emerald-500 to-teal-400' 
+                : telegramToast.type === 'error'
+                ? 'bg-gradient-to-r from-rose-500 via-amber-500 to-red-500'
+                : 'bg-gradient-to-r from-sky-500 via-blue-500 to-indigo-500 animate-pulse'
+            }`} />
+
+            <div className="p-4 sm:p-5 flex items-start gap-3.5">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-inner ${
+                telegramToast.type === 'success'
+                  ? 'bg-emerald-500/20 text-emerald-400'
+                  : telegramToast.type === 'error'
+                  ? 'bg-rose-500/20 text-rose-400'
+                  : 'bg-sky-500/20 text-sky-400'
+              }`}>
+                {telegramToast.type === 'success' ? (
+                  <CheckCircle2 size={22} className="text-emerald-400" />
+                ) : telegramToast.type === 'error' ? (
+                  <AlertTriangle size={22} className="text-rose-400" />
+                ) : (
+                  <RefreshCw size={22} className="text-sky-400 animate-spin" />
+                )}
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <h5 className="text-sm font-black tracking-tight text-white flex items-center gap-2">
+                    {telegramToast.title}
+                  </h5>
+                  <span className={`text-[9px] uppercase font-mono px-2 py-0.5 rounded font-bold ${
+                    telegramToast.type === 'success'
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : telegramToast.type === 'error'
+                      ? 'bg-rose-500/20 text-rose-300'
+                      : 'bg-sky-500/20 text-sky-300'
+                  }`}>
+                    {telegramToast.type === 'loading' ? 'IN PROGRESS' : telegramToast.type.toUpperCase()}
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300 font-medium mt-1 leading-relaxed">
+                  {telegramToast.message}
+                </p>
+
+                {telegramToast.details && (
+                  <p className="text-[11px] text-slate-400 font-mono mt-2 pt-2 border-t border-white/10">
+                    {telegramToast.details}
+                  </p>
+                )}
+
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  <a
+                    href="https://t.me/SmEnterprise_bot"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                  >
+                    <Send size={12} />
+                    <span>Open @SmEnterprise_bot</span>
+                    <ExternalLink size={10} />
+                  </a>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setTelegramToast(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
+                title="Dismiss"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Prominent Visual Header Banner for Admin Panel */}
       {userRole === 'admin' ? (
         <div className="bg-slate-900 text-white rounded-xl border border-slate-800 p-6 shadow-xl relative overflow-hidden">
@@ -4307,6 +4532,261 @@ function HomeSection({
                     <span>💵 {language === 'bn' ? "ক্যাশ লেজার অডিট দেখুন" : "View Cash Ledger Audit"}</span>
                   </button>
                 </div>
+              </div>
+
+              {/* Telegram Live Notification Card */}
+              <div className="bg-gradient-to-br from-blue-500/5 via-sky-500/5 to-slate-50 dark:to-slate-950 p-5 sm:p-6 rounded-2xl border border-sky-200 dark:border-sky-900/60 space-y-5 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-sky-100 dark:border-sky-950/80 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 flex items-center justify-center font-bold shadow-inner">
+                      <Send size={18} />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                        {language === 'bn' ? "টেলিগ্রাম লাইভ নোটিফিকেশন" : "Telegram Live Notification"}
+                        <span className="text-[9px] bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400 px-2.5 py-0.5 rounded-full font-bold inline-flex items-center gap-1 border border-emerald-300 dark:border-emerald-800">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          SERVERLESS API ACTIVE
+                        </span>
+                      </h4>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        {language === 'bn' 
+                          ? "চালান সেভ হওয়ামাত্র সার্ভারলেস এপিআই (/api/telegram)-এর মাধ্যমে সরাসরি নোটিফিকেশন পৌঁছে যাবে।" 
+                          : "Instant notifications sent via Vercel serverless function (/api/telegram) upon saving memos."}
+                      </p>
+                    </div>
+                  </div>
+
+                  <a
+                    href="https://t.me/SmEnterprise_bot"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-black shadow-md shadow-sky-500/20 transition-all self-start sm:self-auto cursor-pointer"
+                  >
+                    <Send size={13} />
+                    <span>Open @SmEnterprise_bot</span>
+                    <ExternalLink size={11} />
+                  </a>
+                </div>
+
+                {/* Important Telegram Activation Step Box */}
+                <div className="bg-sky-50/80 dark:bg-sky-950/50 p-4 rounded-xl border border-sky-200 dark:border-sky-800/80 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-sky-900 dark:text-sky-200 font-black">
+                      <AlertCircle size={15} className="text-sky-600 dark:text-sky-400 shrink-0" />
+                      <span>{language === 'bn' ? "প্রথমবার বট চালু করার প্রয়োজনীয় ধাপ (/start):" : "Telegram First-Time Setup Requirement (/start):"}</span>
+                    </div>
+                    <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {language === 'bn'
+                        ? "টেলিগ্রামের নিরাপত্তা নিয়ম অনুযায়ী, কোনো বট স্বউদ্যোগে মেসেজ দিতে পারে না যতক্ষণ না ব্যবহারকারী নিজে গিয়ে বটে 'Start' পাঠায়। তাই টেলিগ্রামে @SmEnterprise_bot খুলে একবার 'Start' চাপুন।"
+                        : "Telegram prevents bots from sending unsolicited messages. You must open @SmEnterprise_bot in Telegram and tap 'Start' to activate incoming alerts."}
+                    </p>
+                  </div>
+                  <a
+                    href="https://t.me/SmEnterprise_bot"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 px-3 py-1.5 bg-white dark:bg-slate-900 text-sky-700 dark:text-sky-300 border border-sky-300 dark:border-sky-700 font-bold rounded-lg hover:bg-sky-100 transition-all flex items-center gap-1"
+                  >
+                    <span>১-ক্লিকে বটের সাথে চ্যাট শুরু করুন</span>
+                    <ExternalLink size={12} />
+                  </a>
+                </div>
+
+                {/* Interactive Telegram Commands Quick Reference */}
+                <div className="space-y-2">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-300 block">
+                    {language === 'bn' ? "বট কমান্ড সহায়িকা (যা যা আপনি টেলিগ্রামে লিখে পাঠাতে পারেন):" : "Supported Telegram Interactive Commands:"}
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+                    <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-sky-600 dark:text-sky-400 text-xs">today total weight</span>
+                        <span className="text-xs">⚖️</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {language === 'bn' ? "আজকের মোট কেনা খড়ির ওজন (কেজি ও মণ) ও বিল" : "Today's total purchased wood weight & bill"}
+                      </p>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">add balance 25k</span>
+                        <span className="text-xs">💰</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {language === 'bn' ? "ক্যাশ বক্সে ২৫,০০০ টাকা জমা ও লেজারে এন্ট্রি" : "Refill 25k cash in box & log ledger entry"}
+                      </p>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 text-xs">balance</span>
+                        <span className="text-xs">💵</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {language === 'bn' ? "বর্তমান মোট ক্যাশ বাক্স ব্যালেন্স জানতে" : "Current cash box & ledger balance"}
+                      </p>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-amber-600 dark:text-amber-400 text-xs">last entry</span>
+                        <span className="text-xs">🧾</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {language === 'bn' ? "সর্বশেষ মেমো নং, বিক্রেতা ও ওজনের তথ্য" : "Details of the most recent saved memo"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Configuration Credentials Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div className="bg-white dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                    <span className="text-[10px] text-slate-400 uppercase font-black block tracking-wider">{language === 'bn' ? 'টেলিগ্রাম বট' : 'Bot Handle'}</span>
+                    <span className="font-bold text-sky-600 dark:text-sky-400 font-mono text-sm">@SmEnterprise_bot</span>
+                  </div>
+                  <div className="bg-white dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                    <span className="text-[10px] text-slate-400 uppercase font-black block tracking-wider">{language === 'bn' ? 'রেজিস্টার্ড চ্যাট আইডি' : 'Registered Chat ID'}</span>
+                    <span className="font-bold text-slate-800 dark:text-slate-200 font-mono text-sm">1158719251</span>
+                  </div>
+                  <div className="bg-white dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                    <span className="text-[10px] text-slate-400 uppercase font-black block tracking-wider">{language === 'bn' ? 'ট্রিগার ও রিসিভার' : 'Trigger & Receiver'}</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm flex items-center gap-1">
+                      <Check size={14} />
+                      {language === 'bn' ? 'সার্ভারলেস এপিআই সক্রিয়' : 'Serverless API Active'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Prominent Test Action Bar */}
+                <div className="bg-white dark:bg-slate-900/90 p-4 sm:p-5 rounded-xl border border-sky-200 dark:border-sky-900/80 shadow-sm flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-sky-500 animate-ping" />
+                      <span className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                        {language === 'bn' ? "লাইভ টেলিগ্রাম কানেকশন টেস্ট" : "Live Telegram Connection Test"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xl leading-relaxed">
+                      {language === 'bn'
+                        ? "আপনার টেলিগ্রাম ক্রেডেনশিয়াল ব্যবহার করে তাৎক্ষণিক টেস্ট নোটিফিকেশন পাঠান। ফলাফল স্ক্রিনের শীর্ষে টোস্ট মেসেজে দেখানো হবে।"
+                        : "Trigger an immediate live test message using your Telegram credentials. A full confirmation toast notification will display the result."}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2.5 shrink-0">
+                    <button
+                      type="button"
+                      id="btn-test-telegram-notification"
+                      disabled={telegramTestStatus?.loading}
+                      onClick={async () => {
+                        setTelegramTestStatus({ loading: true });
+                        setTelegramToast({
+                          id: Date.now().toString(),
+                          type: 'loading',
+                          title: language === 'bn' ? 'টেলিগ্রাম নোটিফিকেশন পাঠানো হচ্ছে...' : 'Sending Telegram Test Notification...',
+                          message: language === 'bn' 
+                            ? 'চ্যাট আইডি ১১৫৮৭১৯২৫১ এবং @SmEnterprise_bot-এ তাৎক্ষণিক লাইভ কল পাঠানো হচ্ছে...'
+                            : 'Dispatching live test message to Chat ID 1158719251 via @SmEnterprise_bot...'
+                        });
+
+                        if (!onTestTelegramNotification) {
+                          setTelegramTestStatus({ loading: false, success: false, message: 'Notification test handler unavailable' });
+                          setTelegramToast({
+                            id: Date.now().toString(),
+                            type: 'error',
+                            title: 'Configuration Error',
+                            message: 'Notification handler is not available.'
+                          });
+                          return;
+                        }
+
+                        const result = await onTestTelegramNotification();
+                        if (result.success) {
+                          const successMsg = language === 'bn'
+                            ? '✅ টেস্ট নোটিফিকেশন সফলভাবে আপনার টেলিগ্রাম অ্যাকাউন্টে পাঠানো হয়েছে!'
+                            : '✅ Test notification delivered successfully to your Telegram account!';
+                          setTelegramTestStatus({
+                            loading: false,
+                            success: true,
+                            message: successMsg
+                          });
+                          setTelegramToast({
+                            id: Date.now().toString(),
+                            type: 'success',
+                            title: language === 'bn' ? 'টেলিগ্রাম টেস্ট সফল!' : 'Telegram Test Successful!',
+                            message: successMsg,
+                            details: language === 'bn'
+                              ? 'চ্যাট আইডি: 1158719251 • বট: @SmEnterprise_bot • মেমো হিসাব সতর্কতা সক্রিয়'
+                              : 'Chat ID: 1158719251 • Bot: @SmEnterprise_bot • Live transaction alerts verified.'
+                          });
+                        } else {
+                          const errMsg = result.error || 'Failed to dispatch Telegram notification';
+                          setTelegramTestStatus({
+                            loading: false,
+                            success: false,
+                            message: language === 'bn'
+                              ? `⚠️ পাঠাতে ব্যর্থ: ${errMsg}`
+                              : `⚠️ Delivery issue: ${errMsg}`
+                          });
+                          setTelegramToast({
+                            id: Date.now().toString(),
+                            type: 'error',
+                            title: language === 'bn' ? 'টেলিগ্রাম টেস্ট ব্যর্থ হয়েছে' : 'Telegram Delivery Failed',
+                            message: errMsg,
+                            details: errMsg.toLowerCase().includes('chat not found')
+                              ? (language === 'bn' 
+                                  ? 'জরুরি নির্দেশিকা: টেলিগ্রামে @SmEnterprise_bot সার্চ করে Start চাপুন যাতে বট আপনাকে মেসেজ পাঠাতে পারে।' 
+                                  : 'Telegram requirement: Open @SmEnterprise_bot in Telegram and tap Start (/start) so the bot can message your Chat ID.')
+                              : undefined
+                          });
+                        }
+                      }}
+                      className="w-full sm:w-auto px-6 py-3.5 bg-gradient-to-r from-sky-500 via-blue-600 to-indigo-600 hover:from-sky-600 hover:via-blue-700 hover:to-indigo-700 active:scale-[0.98] text-white text-xs sm:text-sm font-black uppercase tracking-wider rounded-xl shadow-lg shadow-sky-500/25 flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {telegramTestStatus?.loading ? (
+                        <>
+                          <RefreshCw size={16} className="animate-spin" />
+                          <span>{language === 'bn' ? 'পাঠানো হচ্ছে...' : 'Dispatching Live Test...'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Send size={16} />
+                          <span>{language === 'bn' ? 'টেস্ট টেলিগ্রাম নোটিফিকেশন' : 'Test Telegram Notification'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Persistent Inline Status */}
+                {telegramTestStatus?.message && (
+                  <div className={`p-4 rounded-xl text-xs font-bold border transition-all flex items-start gap-3 ${
+                    telegramTestStatus.success 
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900/50'
+                      : 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 border-amber-200 dark:border-amber-900/50'
+                  }`}>
+                    <div className="shrink-0 mt-0.5">
+                      {telegramTestStatus.success ? (
+                        <CheckCircle2 size={16} className="text-emerald-600 dark:text-emerald-400" />
+                      ) : (
+                        <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400" />
+                      )}
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <p>{telegramTestStatus.message}</p>
+                      {!telegramTestStatus.success && (
+                        <p className="text-[11px] font-normal text-amber-700 dark:text-amber-400">
+                          {language === 'bn'
+                            ? 'টিপস: টেলিগ্রামে @SmEnterprise_bot সার্চ করুন অথবা উপরে "Open @SmEnterprise_bot" বাটনে ক্লিক করে /start চাপুন।'
+                            : 'Tip: Telegram bots cannot message users who haven\'t initiated a conversation. Click "Open @SmEnterprise_bot" above and tap /start.'}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Emergency Transactions Log in Admin Settings */}

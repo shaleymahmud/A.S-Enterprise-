@@ -3,6 +3,15 @@ import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import telegramHandler from "./api/telegram";
+import {
+  updateSyncedState,
+  getPendingActions,
+  completeAction,
+  broadcastTelegramNotification,
+  getTelegramStatus,
+  sendTelegramMessage
+} from "./server/telegram";
 
 dotenv.config();
 
@@ -10,6 +19,98 @@ const app = express();
 app.use(express.json());
 
 const PORT = 3000;
+
+// ---------------------------------------------------------------------------
+// Telegram Serverless API Route (/api/telegram)
+// ---------------------------------------------------------------------------
+app.all("/api/telegram", (req, res) => telegramHandler(req, res));
+
+// ---------------------------------------------------------------------------
+// Telegram Bot API Routes
+// ---------------------------------------------------------------------------
+
+// Sync live state from web app to Telegram engine & return pending actions
+app.post("/api/telegram/sync-state", (req, res) => {
+  try {
+    const { calculations, cashboxBalance } = req.body;
+    updateSyncedState({ calculations, cashboxBalance });
+    const pending = getPendingActions();
+    res.json({ success: true, pendingActions: pending });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || "Sync error" });
+  }
+});
+
+// Acknowledge execution of an action from Telegram (e.g. ADD_BALANCE completed in Firestore)
+app.post("/api/telegram/ack-action", (req, res) => {
+  try {
+    const { actionId } = req.body;
+    if (actionId) {
+      completeAction(actionId);
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || "Ack error" });
+  }
+});
+
+// Broadcast calculation saved / test notification to all subscribed Telegram chats
+app.post("/api/telegram/notify", async (req, res) => {
+  try {
+    const { entry } = req.body;
+    if (!entry) {
+      return res.status(400).json({ success: false, error: "Entry payload required" });
+    }
+
+    const formattedBill = typeof entry.totalPrice === "number"
+      ? entry.totalPrice.toLocaleString()
+      : entry.totalPrice;
+    const formattedWeight = typeof entry.totalKg === "number"
+      ? entry.totalKg.toLocaleString()
+      : entry.totalKg;
+    const seller = (entry.sellerName || "N/A").trim();
+
+    const dhakaTimeStr = new Date().toLocaleString("bn-BD", {
+      timeZone: "Asia/Dhaka",
+      dateStyle: "medium",
+      timeStyle: "short"
+    });
+
+    const telegramText = entry.isTest
+      ? `🔔 *টেস্ট টেলিগ্রাম নোটিফিকেশন*
+👤 বিক্রেতা: ${seller}
+📝 মেমো নং: #${entry.challanNo}
+⚖️ মোট ওজন: ${formattedWeight} কেজি
+💰 মোট বিল: ৳${formattedBill}
+👨‍💼 অপারেটর: ${entry.operatorName || "Admin"}
+⏰ সময়: ${dhakaTimeStr}
+⚡ *স্ট্যাটাস:* লাইভ কানেকশন সফলভাবে যাচাই করা হয়েছে!`
+      : `🔔 *নতুন খড়ি ক্রয় হিসাব সংরক্ষিত হয়েছে!*
+👤 *বিক্রেতা:* ${seller}
+📝 *চালান/মেমো নং:* #${entry.challanNo}
+⚖️ *মোট ওজন:* ${formattedWeight} কেজি
+💰 *মোট বিল:* ৳${formattedBill}
+👨‍💼 *অপারেটর:* ${entry.operatorName || "Admin"}
+⏰ *সময়:* ${dhakaTimeStr}
+
+_এ. এস এন্টারপ্রাইজ ম্যানেজমেন্ট সিস্টেম_`;
+
+    const result = await broadcastTelegramNotification(telegramText);
+    res.json({ success: result.sentCount > 0, ...result });
+  } catch (err: any) {
+    console.error("Error in /api/telegram/notify:", err);
+    res.status(500).json({ success: false, error: err?.message || "Internal error" });
+  }
+});
+
+// Get real-time status of the Telegram bot
+app.get("/api/telegram/status", (req, res) => {
+  try {
+    res.json(getTelegramStatus());
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Status error" });
+  }
+});
 
 // Initialize Gemini securely with process.env.GEMINI_API_KEY (Lazy initialization helper)
 let aiInstance: GoogleGenAI | null = null;
