@@ -1,3 +1,5 @@
+import { handleTelegramCommand } from './webhook';
+
 export default async function handler(req: any, res: any) {
   // Only accept POST requests
   if (req.method !== 'POST') {
@@ -5,6 +7,18 @@ export default async function handler(req: any, res: any) {
       success: false,
       error: 'Method Not Allowed. Only POST requests are supported.'
     });
+  }
+
+  // If this is an incoming Telegram Webhook payload (contains message or update_id)
+  if (req.body?.message || req.body?.channel_post || req.body?.update_id) {
+    const message = req.body.message || req.body.channel_post || req.body.edited_message;
+    if (!message || !message.text) {
+      return res.status(200).json({ ok: true, note: 'No text message' });
+    }
+    const chatId = message.chat?.id || process.env.TELEGRAM_CHAT_ID || '1158719251';
+    const senderName = message.from?.first_name || 'Admin';
+    await handleTelegramCommand(chatId, message.text, senderName);
+    return res.status(200).json({ ok: true, handled: message.text });
   }
 
   // Read Bot Token and Chat ID from environment variables (with default fallback for quick preview)

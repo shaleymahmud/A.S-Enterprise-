@@ -4543,16 +4543,16 @@ function HomeSection({
                     </div>
                     <div>
                       <h4 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                        {language === 'bn' ? "টেলিগ্রাম লাইভ নোটিফিকেশন" : "Telegram Live Notification"}
+                        {language === 'bn' ? "টেলিগ্রাম নোটিফিকেশন ও ওয়েবহুক বট" : "Telegram Notification & Webhook Bot"}
                         <span className="text-[9px] bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400 px-2.5 py-0.5 rounded-full font-bold inline-flex items-center gap-1 border border-emerald-300 dark:border-emerald-800">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          SERVERLESS API ACTIVE
+                          SERVERLESS WEBHOOK ACTIVE
                         </span>
                       </h4>
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                         {language === 'bn' 
-                          ? "চালান সেভ হওয়ামাত্র সার্ভারলেস এপিআই (/api/telegram)-এর মাধ্যমে সরাসরি নোটিফিকেশন পৌঁছে যাবে।" 
-                          : "Instant notifications sent via Vercel serverless function (/api/telegram) upon saving memos."}
+                          ? "চালান সেভ হওয়ামাত্র স্বয়ংক্রিয় নোটিফিকেশন এবং বটে কমান্ড (যেমন: today total weight বা add balance 25k) পাঠিয়ে সরাসরি হিসাব জানার সুবিধা চালু রয়েছে।" 
+                          : "Automatic notifications on memo save, plus live interactive Telegram commands via serverless webhook (/api/webhook)."}
                       </p>
                     </div>
                   </div>
@@ -4655,7 +4655,7 @@ function HomeSection({
                     <span className="text-[10px] text-slate-400 uppercase font-black block tracking-wider">{language === 'bn' ? 'ট্রিগার ও রিসিভার' : 'Trigger & Receiver'}</span>
                     <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm flex items-center gap-1">
                       <Check size={14} />
-                      {language === 'bn' ? 'সার্ভারলেস এপিআই সক্রিয়' : 'Serverless API Active'}
+                      {language === 'bn' ? 'সার্ভারলেস ওয়েবহুক সক্রিয়' : 'Serverless Webhook Active'}
                     </span>
                   </div>
                 </div>
