@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import telegramHandler from "./api/telegram";
-import webhookHandler from "./api/webhook";
 import {
   updateSyncedState,
   getPendingActions,
@@ -22,10 +21,9 @@ app.use(express.json());
 const PORT = 3000;
 
 // ---------------------------------------------------------------------------
-// Telegram Serverless API Routes (/api/telegram & /api/webhook)
+// Telegram Serverless API Route (/api/telegram)
 // ---------------------------------------------------------------------------
 app.all("/api/telegram", (req, res) => telegramHandler(req, res));
-app.all("/api/webhook", (req, res) => webhookHandler(req, res));
 
 // ---------------------------------------------------------------------------
 // Telegram Bot API Routes
