@@ -27,7 +27,11 @@ import {
   Sun,
   Moon,
   Search,
-  RotateCcw
+  RotateCcw,
+  ShieldAlert,
+  SlidersHorizontal,
+  Zap,
+  AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import AssistantSection from './components/AssistantSection';
@@ -141,6 +145,13 @@ interface CopyConfig {
   netWeight: boolean;
   rate: boolean;
   totalPrice: boolean;
+}
+
+export interface EmergencySettings {
+  emergencyAmount: number;
+  dailyLimit: number;
+  lastUpdated?: number;
+  lastUpdatedBy?: string;
 }
 
 // --- Bengali numeral and text utility ---
@@ -358,6 +369,13 @@ export default function App() {
   const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
   const [cashBoxBalance, setCashBoxBalance] = useState<number>(0);
   const [cashLedger, setCashLedger] = useState<any[]>([]);
+  const [emergencySettings, setEmergencySettings] = useState<EmergencySettings>({
+    emergencyAmount: 10000,
+    dailyLimit: 1
+  });
+  const [isEmergencyLoading, setIsEmergencyLoading] = useState<boolean>(false);
+  const [adminEmergencyAmountInput, setAdminEmergencyAmountInput] = useState<string>('');
+  const [adminEmergencyDailyLimitInput, setAdminEmergencyDailyLimitInput] = useState<string>('');
 
   // Firebase Authentication & Role state
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
@@ -592,6 +610,32 @@ export default function App() {
       }
     }, (error) => {
       console.error("Firestore cashbox sub error: ", error);
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser]);
+
+  // Subscribe to Emergency Settings in Firestore in real-time
+  useEffect(() => {
+    if (!firebaseUser) return;
+    const docRef = doc(db, 'settings', 'emergency_config');
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setEmergencySettings({
+          emergencyAmount: typeof data.emergencyAmount === 'number' ? data.emergencyAmount : 10000,
+          dailyLimit: typeof data.dailyLimit === 'number' ? data.dailyLimit : 1,
+          lastUpdated: data.lastUpdated,
+          lastUpdatedBy: data.lastUpdatedBy
+        });
+      } else {
+        setEmergencySettings({
+          emergencyAmount: 10000,
+          dailyLimit: 1
+        });
+      }
+    }, (error) => {
+      console.error("Firestore emergency_config sub error: ", error);
     });
 
     return () => unsubscribe();
@@ -1258,6 +1302,138 @@ export default function App() {
     });
   };
 
+  const userTodayEmergencyCount = useMemo(() => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const startOfDayTs = startOfDay.getTime();
+    const userKey = currentUserEmail || (firebaseUser ? firebaseUser.uid : currentUser);
+
+    return cashLedger.filter(entry => 
+      !entry.isDeleted &&
+      (entry.type === 'emergency_topup' || entry.isEmergency) &&
+      entry.timestamp >= startOfDayTs &&
+      (entry.createdBy === userKey || entry.operatorName === currentUser || entry.userId === userKey)
+    ).length;
+  }, [cashLedger, currentUserEmail, firebaseUser, currentUser]);
+
+  const saveEmergencySettings = async (amount: number, limit: number): Promise<boolean> => {
+    try {
+      if (isNaN(amount) || amount <= 0 || isNaN(limit) || limit <= 0) {
+        alert(language === 'bn' ? 'অনুগ্রহ করে সঠিক পরিমাণ ও লিমিট ইনপুট দিন।' : 'Please enter valid amount and limit.');
+        return false;
+      }
+      const docRef = doc(db, 'settings', 'emergency_config');
+      await setDoc(docRef, {
+        emergencyAmount: amount,
+        dailyLimit: limit,
+        lastUpdated: Date.now(),
+        lastUpdatedBy: currentUserEmail || currentUser || 'Admin'
+      }, { merge: true });
+      alert(
+        language === 'bn'
+          ? `ইমার্জেন্সি ব্যালেন্স পলিসি সংরক্ষিত হয়েছে!\nটপ-আপ: ৳${amount.toLocaleString()}, দৈনিক লিমিট: ${limit} বার।`
+          : `Emergency Balance settings saved!\nAmount: ৳${amount.toLocaleString()}, Daily Limit: ${limit} time(s).`
+      );
+      return true;
+    } catch (err: any) {
+      console.error("Error saving emergency settings: ", err);
+      alert(language === 'bn' ? 'সেটিংস সংরক্ষণে সমস্যা হয়েছে: ' + err.message : 'Error saving settings: ' + err.message);
+      return false;
+    }
+  };
+
+  const requestEmergencyTopUp = async (): Promise<boolean> => {
+    if (!firebaseUser) {
+      alert(language === 'bn' ? 'অনুগ্রহ করে প্রথমে লগইন করুন।' : 'Please log in first.');
+      return false;
+    }
+
+    const limit = emergencySettings.dailyLimit ?? 1;
+    const amount = emergencySettings.emergencyAmount ?? 10000;
+    const userKey = currentUserEmail || firebaseUser.uid || currentUser;
+    const cleanUserKey = userKey.replace(/[^a-zA-Z0-9]/g, '_');
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    if (userTodayEmergencyCount >= limit) {
+      alert(
+        language === 'bn'
+          ? `আজকের ইমার্জেন্সি ব্যালেন্স লিমিট শেষ!\nআপনি আজ ইতিমধ্যে ${userTodayEmergencyCount} বার (দৈনিক সর্বোচ্চ সীমা: ${limit} বার) ইমার্জেন্সি ব্যালেন্স গ্রহণ করেছেন। অতিরিক্ত ক্যাশের জন্য অ্যাডমিনের সাথে যোগাযোগ করুন।`
+          : `Daily Emergency Limit Reached!\nYou have already used your emergency balance ${userTodayEmergencyCount} time(s) today (daily limit: ${limit}). Please contact Admin for additional funds.`
+      );
+      return false;
+    }
+
+    const confirmed = window.confirm(
+      language === 'bn'
+        ? `🚨 ইমার্জেন্সি ব্যালেন্স নিশ্চিতকরণ:\n\nআপনি কি ৳${amount.toLocaleString()} ইমার্জেন্সি ব্যালেন্স ক্যাশ বক্সে যোগ করতে চান?\n\n• আজকের ব্যবহার: ${userTodayEmergencyCount}/${limit} বার\n• যুক্ত হওয়ার সাথে সাথে সেন্ট্রাল ক্যাশ ব্যালেন্সে ৳${amount.toLocaleString()} জমা হবে।`
+        : `🚨 Emergency Balance Confirmation:\n\nDo you want to request ৳${amount.toLocaleString()} Emergency Balance?\n\n• Today's count: ${userTodayEmergencyCount}/${limit}\n• Central cash balance will be credited with ৳${amount.toLocaleString()} immediately.`
+    );
+
+    if (!confirmed) return false;
+
+    setIsEmergencyLoading(true);
+    try {
+      await runTransaction(db, async (transaction) => {
+        const cashboxDocRef = doc(db, 'settings', 'cashbox');
+        const cashboxSnap = await transaction.get(cashboxDocRef);
+        
+        let currentBalance = 0;
+        if (cashboxSnap.exists()) {
+          currentBalance = cashboxSnap.data().balance || 0;
+        }
+        
+        const nextBalance = parseFloat((currentBalance + amount).toFixed(2));
+        
+        transaction.set(cashboxDocRef, {
+          balance: nextBalance,
+          lastUpdated: Date.now(),
+          lastUpdatedBy: userKey
+        }, { merge: true });
+
+        // Add emergency credit log in the ledger
+        const ledgerId = Math.random().toString(36).substr(2, 9);
+        const ledgerDocRef = doc(collection(db, 'cash_ledger'), ledgerId);
+        transaction.set(ledgerDocRef, {
+          id: ledgerId,
+          timestamp: Date.now(),
+          type: 'emergency_topup',
+          isEmergency: true,
+          amount: amount,
+          balanceAfter: nextBalance,
+          description: language === 'bn'
+            ? `অপারেটর কর্তৃক ইমার্জেন্সি ব্যালেন্স গ্রহণ (${currentUser})`
+            : `Emergency Balance by Operator (${currentUser})`,
+          createdBy: userKey,
+          operatorName: currentUser,
+          userId: userKey
+        });
+
+        // Update user usage tracker in settings collection
+        const usageDocRef = doc(db, 'settings', `emergency_usage_${cleanUserKey}`);
+        transaction.set(usageDocRef, {
+          userId: userKey,
+          userName: currentUser,
+          lastUpdated: Date.now(),
+          dateStr: todayStr,
+          count: userTodayEmergencyCount + 1
+        }, { merge: true });
+      });
+
+      alert(
+        language === 'bn'
+          ? `✅ সফল হয়েছে! ৳${amount.toLocaleString()} ইমার্জেন্সি ব্যালেন্স সেন্ট্রাল ক্যাশ বক্সে যুক্ত হয়েছে।`
+          : `✅ Success! ৳${amount.toLocaleString()} Emergency Balance added to central cash box.`
+      );
+      return true;
+    } catch (err: any) {
+      console.error("Error adding emergency balance: ", err);
+      alert(language === 'bn' ? 'ইমার্জেন্সি ব্যালেন্স যুক্ত করতে সমস্যা হয়েছে: ' + err.message : 'Error processing emergency balance: ' + err.message);
+      return false;
+    } finally {
+      setIsEmergencyLoading(false);
+    }
+  };
+
   const topUpCashBox = async (amount: number): Promise<boolean> => {
     try {
       const topUpByVal = currentUserEmail || (firebaseUser ? firebaseUser.uid : 'Guest');
@@ -1324,7 +1500,7 @@ export default function App() {
           currentBalance = cashboxSnap.data().balance || 0;
         }
 
-        const isCredit = ledgerData.type === 'credit';
+        const isCredit = ledgerData.type === 'credit' || ledgerData.type === 'emergency_topup';
         const nextBalance = parseFloat((currentBalance + (isCredit ? diff : -diff)).toFixed(2));
         if (nextBalance < 0) {
           throw new Error("INSUFFICIENT_CASHBOX_BALANCE");
@@ -1398,7 +1574,7 @@ export default function App() {
               currentBalance = cashboxSnap.data().balance || 0;
             }
 
-            const isCredit = ledgerData.type === 'credit';
+            const isCredit = ledgerData.type === 'credit' || ledgerData.type === 'emergency_topup';
             const diff = isCredit ? -amount : amount;
             const nextBalance = parseFloat((currentBalance + diff).toFixed(2));
             if (nextBalance < 0) {
@@ -1466,7 +1642,7 @@ export default function App() {
               currentBalance = cashboxSnap.data().balance || 0;
             }
 
-            const isCredit = ledgerData.type === 'credit';
+            const isCredit = ledgerData.type === 'credit' || ledgerData.type === 'emergency_topup';
             const diff = isCredit ? amount : -amount;
             const nextBalance = parseFloat((currentBalance + diff).toFixed(2));
             if (nextBalance < 0) {
@@ -2180,6 +2356,11 @@ export default function App() {
                 onBulkDelete={bulkDeleteCalculations}
                 onBulkPermanentDelete={bulkPermanentDeleteCalculations}
                 onBulkRestore={bulkRestoreCalculations}
+                emergencySettings={emergencySettings}
+                onSaveEmergencySettings={saveEmergencySettings}
+                onRequestEmergencyTopUp={requestEmergencyTopUp}
+                userTodayEmergencyCount={userTodayEmergencyCount}
+                isEmergencyLoading={isEmergencyLoading}
               />
             </motion.div>
           )}
@@ -2200,6 +2381,9 @@ export default function App() {
                 currentUserEmail={currentUserEmail}
                 onDirtyChange={setIsFormDirty}
                 clearFormSignal={clearFormSignal}
+                onRequestEmergencyTopUp={requestEmergencyTopUp}
+                emergencySettings={emergencySettings}
+                userTodayEmergencyCount={userTodayEmergencyCount}
               />
             </motion.div>
           )}
@@ -2497,6 +2681,70 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Admin Emergency Balance Configuration */}
+                  {userRole === 'admin' && (
+                    <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <ShieldAlert className="text-amber-600 dark:text-amber-400" size={18} />
+                        <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                          {language === 'bn' ? 'ইমার্জেন্সি ব্যালেন্স পলিসি কনফিগারেশন' : 'Emergency Balance Configuration'}
+                        </h4>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        {language === 'bn'
+                          ? 'অপারেটরদের জরুরি প্রয়োজনে কত টাকা এবং দৈনিক সর্বোচ্চ কতবার ব্যালেন্স নিতে পারবে তা নির্ধারণ করুন। এটি সরাসরি ফায়ারবেসে সংরক্ষিত থাকবে।'
+                          : 'Set emergency top-up amount and daily frequency limit per user. Saved centrally in Firestore.'}
+                      </p>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <div>
+                          <label className="block text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-1">
+                            {language === 'bn' ? 'টাকার পরিমাণ (টাকা)' : 'Emergency Amount (BDT)'}
+                          </label>
+                          <input 
+                            type="number"
+                            placeholder={emergencySettings.emergencyAmount.toString()}
+                            value={adminEmergencyAmountInput}
+                            onChange={(e) => setAdminEmergencyAmountInput(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-800 dark:text-slate-200 outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                          <span className="text-[9px] text-slate-400">
+                            {language === 'bn' ? `বর্তমান: ৳${emergencySettings.emergencyAmount.toLocaleString()}` : `Current: ৳${emergencySettings.emergencyAmount.toLocaleString()}`}
+                          </span>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mb-1">
+                            {language === 'bn' ? 'দৈনিক সর্বোচ্চ লিমিট (বার)' : 'Daily Limit (Times/Day)'}
+                          </label>
+                          <input 
+                            type="number"
+                            min="1"
+                            max="10"
+                            placeholder={emergencySettings.dailyLimit.toString()}
+                            value={adminEmergencyDailyLimitInput}
+                            onChange={(e) => setAdminEmergencyDailyLimitInput(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold text-slate-800 dark:text-slate-200 outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                          <span className="text-[9px] text-slate-400">
+                            {language === 'bn' ? `বর্তমান: ${emergencySettings.dailyLimit} বার` : `Current: ${emergencySettings.dailyLimit} time(s)`}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => {
+                          const amt = adminEmergencyAmountInput ? parseFloat(adminEmergencyAmountInput) : emergencySettings.emergencyAmount;
+                          const lim = adminEmergencyDailyLimitInput ? parseInt(adminEmergencyDailyLimitInput, 10) : emergencySettings.dailyLimit;
+                          saveEmergencySettings(amt, lim);
+                        }}
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-sm"
+                      >
+                        <Save size={14} />
+                        {language === 'bn' ? 'পলিসি সেভ করুন' : 'Save Emergency Config'}
+                      </button>
+                    </div>
+                  )}
+
                   <div className="pt-4">
                     <button 
                       onClick={() => { if(confirm('Clear all stored business calculations, credentials and logs?')) { localStorage.clear(); window.location.reload(); } }}
@@ -2533,7 +2781,44 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center">
+                    {/* Operator Emergency Balance Panel */}
+                    <div className="pt-3 pb-1 border-t border-slate-100 dark:border-slate-800">
+                      <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 rounded-lg p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 text-amber-800 dark:text-amber-300 font-black text-xs uppercase tracking-wider">
+                            <AlertTriangle size={15} className="text-amber-600 dark:text-amber-400 animate-pulse" />
+                            {language === 'bn' ? 'ইমার্জেন্সি ব্যালেন্স' : 'Emergency Balance'}
+                          </div>
+                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-200/70 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200">
+                            {userTodayEmergencyCount}/{emergencySettings.dailyLimit} {language === 'bn' ? 'বার ব্যবহৃত' : 'used'}
+                          </span>
+                        </div>
+                        
+                        <div className="text-[11px] text-slate-600 dark:text-slate-300 flex justify-between items-center">
+                          <span>{language === 'bn' ? 'নির্ধারিত পরিমাণ:' : 'Configured Amount:'}</span>
+                          <span className="font-black text-amber-700 dark:text-amber-400">৳{emergencySettings.emergencyAmount.toLocaleString()}</span>
+                        </div>
+
+                        <button
+                          onClick={requestEmergencyTopUp}
+                          disabled={isEmergencyLoading || userTodayEmergencyCount >= emergencySettings.dailyLimit}
+                          className={`w-full py-2 px-3 rounded text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all shadow-sm ${
+                            userTodayEmergencyCount >= emergencySettings.dailyLimit
+                              ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-300 dark:border-slate-700'
+                              : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white active:scale-95'
+                          }`}
+                        >
+                          <Zap size={14} className={isEmergencyLoading ? 'animate-spin' : ''} />
+                          {isEmergencyLoading
+                            ? (language === 'bn' ? 'যোগ হচ্ছে...' : 'Processing...')
+                            : userTodayEmergencyCount >= emergencySettings.dailyLimit
+                              ? (language === 'bn' ? 'আজকের লিমিট পূর্ণ' : 'Daily Limit Reached')
+                              : (language === 'bn' ? `ইমার্জেন্সি ব্যালেন্স নিন (৳${emergencySettings.emergencyAmount.toLocaleString()})` : `Top-up ৳${emergencySettings.emergencyAmount.toLocaleString()}`)}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center">
                       <p className="text-[10px] text-slate-400 dark:text-slate-500 italic">
                         {language === 'bn' ? 'সকল চালানের হিসাব ক্লাউডে সংরক্ষিত' : 'Logs secured on cloud'}
                       </p>
@@ -2685,6 +2970,11 @@ interface HomeSectionProps {
   onBulkDelete?: (ids: string[], onSuccess?: () => void) => void;
   onBulkPermanentDelete?: (ids: string[], onSuccess?: () => void) => void;
   onBulkRestore?: (ids: string[], onSuccess?: () => void) => void;
+  emergencySettings?: EmergencySettings;
+  onSaveEmergencySettings?: (amount: number, limit: number) => Promise<boolean>;
+  onRequestEmergencyTopUp?: () => Promise<boolean>;
+  userTodayEmergencyCount?: number;
+  isEmergencyLoading?: boolean;
 }
 
 function HomeSection({ 
@@ -2720,9 +3010,14 @@ function HomeSection({
   onDeleteNote,
   onBulkDelete,
   onBulkPermanentDelete,
-  onBulkRestore
+  onBulkRestore,
+  emergencySettings = { emergencyAmount: 10000, dailyLimit: 1 },
+  onSaveEmergencySettings,
+  onRequestEmergencyTopUp,
+  userTodayEmergencyCount = 0,
+  isEmergencyLoading = false
 }: HomeSectionProps) {
-  const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger' | 'userNotes'>('active');
+  const [activeSubTab, setActiveSubTab] = useState<'active' | 'trash' | 'cashLedger' | 'userNotes' | 'adminSettings'>('active');
   const [cashLedgerSubTab, setCashLedgerSubTab] = useState<'active' | 'trash'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
@@ -2730,6 +3025,8 @@ function HomeSection({
   const [memoCalc, setMemoCalc] = useState<Calculation | null>(null);
   const [buyerName, setBuyerName] = useState<string>('');
   const [operatorFilter, setOperatorFilter] = useState('ALL');
+  const [adminEmergencyAmt, setAdminEmergencyAmt] = useState<string>('');
+  const [adminEmergencyLim, setAdminEmergencyLim] = useState<string>('');
 
   const [selectedCalcIds, setSelectedCalcIds] = useState<string[]>([]);
 
@@ -2926,6 +3223,8 @@ function HomeSection({
               unit="BDT" 
               bg="bg-emerald-600 border-emerald-500" 
               text="text-white" 
+              labelColorClass="text-[#b73f7a]"
+              unitColorClass="text-[#edc600] font-bold"
             />
             <CompactStatCard 
               label={language === 'bn' ? "মোট ডিপো খরচ" : "Total Depot Expenses"} 
@@ -3003,6 +3302,19 @@ function HomeSection({
                 </span>
               )}
             </button>
+            {userRole === 'admin' && (
+              <button
+                onClick={() => setActiveSubTab('adminSettings')}
+                className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activeSubTab === 'adminSettings'
+                    ? 'bg-amber-600 text-white shadow-sm font-black'
+                    : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <ShieldAlert size={13} />
+                <span>⚙️ {language === 'bn' ? 'এডমিন সেটিংস (ইমার্জেন্সি পলিসি)' : 'Admin Settings (Emergency)'}</span>
+              </button>
+            )}
           </div>
 
           {activeSubTab === 'active' || activeSubTab === 'trash' ? (
@@ -3575,25 +3887,40 @@ function HomeSection({
                   <div className="border border-slate-100 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900">
                     {/* Mobile Ledger List View */}
                     <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800">
-                      {(cashLedgerSubTab === 'active' ? activeLedger : deletedLedger).map((entry) => (
-                        <div key={entry.id} className="p-4 space-y-2 hover:bg-slate-50/50">
+                      {(cashLedgerSubTab === 'active' ? activeLedger : deletedLedger).map((entry) => {
+                        const isEmergency = entry.type === 'emergency_topup' || entry.isEmergency;
+                        return (
+                        <div 
+                          key={entry.id} 
+                          className={`p-4 space-y-2 transition-colors ${
+                            isEmergency 
+                              ? 'bg-amber-100/90 dark:bg-amber-950/50 border-l-4 border-amber-500 shadow-xs' 
+                              : 'hover:bg-slate-50/50'
+                          }`}
+                        >
                           <div className="flex items-center justify-between">
                             <span className="text-[9px] font-bold text-slate-400">
                               {new Date(entry.timestamp).toLocaleString(language === 'bn' ? 'bn-BD' : 'en-US')}
                             </span>
-                            <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
-                              entry.type === 'credit'
-                                ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600'
-                                : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600'
-                            }`}>
-                              {entry.type === 'credit' ? (language === 'bn' ? 'ক্রেডিট (+)' : 'CREDIT (+)') : (language === 'bn' ? 'ডেবিট (-)' : 'DEBIT (-)')}
-                            </span>
+                            {isEmergency ? (
+                              <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-amber-500 text-white shadow-xs inline-flex items-center gap-1 animate-pulse">
+                                <span>🚨</span> Emergency Balance by Operator
+                              </span>
+                            ) : (
+                              <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
+                                entry.type === 'credit'
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600'
+                                  : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600'
+                              }`}>
+                                {entry.type === 'credit' ? (language === 'bn' ? 'ক্রেডিট (+)' : 'CREDIT (+)') : (language === 'bn' ? 'ডেবিট (-)' : 'DEBIT (-)')}
+                              </span>
+                            )}
                           </div>
-                          <div className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                          <div className={`text-xs font-bold ${isEmergency ? 'text-amber-950 dark:text-amber-200' : 'text-slate-800 dark:text-slate-200'}`}>
                             {entry.description}
                           </div>
                           <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500">
-                            <span>Amount: <strong className={entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'}>৳{entry.amount.toFixed(2)}</strong></span>
+                            <span>Amount: <strong className={isEmergency ? 'text-amber-700 dark:text-amber-400 font-black' : (entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-600')}>+৳{entry.amount.toFixed(2)}</strong></span>
                             <span>Balance After: <strong className="text-slate-700 dark:text-slate-300">৳{entry.balanceAfter.toFixed(2)}</strong></span>
                           </div>
                           
@@ -3650,7 +3977,8 @@ function HomeSection({
                             </div>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     {/* Desktop Ledger Table View */}
@@ -3668,24 +3996,40 @@ function HomeSection({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                          {(cashLedgerSubTab === 'active' ? activeLedger : deletedLedger).map((entry) => (
-                            <tr key={entry.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
+                          {(cashLedgerSubTab === 'active' ? activeLedger : deletedLedger).map((entry) => {
+                            const isEmergency = entry.type === 'emergency_topup' || entry.isEmergency;
+                            return (
+                            <tr 
+                              key={entry.id} 
+                              className={`text-[11px] transition-colors ${
+                                isEmergency 
+                                  ? 'bg-amber-100/90 dark:bg-amber-950/50 border-l-4 border-amber-500 text-slate-900 dark:text-slate-100 font-bold' 
+                                  : 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
                               <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
                                 {new Date(entry.timestamp).toLocaleString(language === 'bn' ? 'bn-BD' : 'en-US')}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
-                                <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
-                                  entry.type === 'credit'
-                                    ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600'
-                                    : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600'
-                                }`}>
-                                  {entry.type === 'credit' ? (language === 'bn' ? 'ক্রেডিট (+)' : 'CREDIT (+)') : (language === 'bn' ? 'ডেবিট (-)' : 'DEBIT (-)')}
-                                </span>
+                                {isEmergency ? (
+                                  <span className="text-[9px] font-black uppercase px-2.5 py-1 rounded bg-amber-500 text-white shadow-xs inline-flex items-center gap-1 animate-pulse">
+                                    <span>🚨</span>
+                                    <span>Emergency Balance by Operator</span>
+                                  </span>
+                                ) : (
+                                  <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
+                                    entry.type === 'credit'
+                                      ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600'
+                                      : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600'
+                                  }`}>
+                                    {entry.type === 'credit' ? (language === 'bn' ? 'ক্রেডিট (+)' : 'CREDIT (+)') : (language === 'bn' ? 'ডেবিট (-)' : 'DEBIT (-)')}
+                                  </span>
+                                )}
                               </td>
                               <td className={`px-4 py-3 font-black text-right whitespace-nowrap ${
-                                entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'
+                                isEmergency ? 'text-amber-700 dark:text-amber-400' : (entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-600')
                               }`}>
-                                {entry.type === 'credit' ? '+' : '-'}৳{entry.amount.toFixed(2)}
+                                {entry.type === 'credit' || isEmergency ? '+' : '-'}৳{entry.amount.toFixed(2)}
                               </td>
                               <td className="px-4 py-3 font-black text-slate-700 dark:text-slate-300 text-right whitespace-nowrap">
                                 ৳{entry.balanceAfter.toFixed(2)}
@@ -3748,7 +4092,8 @@ function HomeSection({
                                 </td>
                               )}
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -3808,6 +4153,221 @@ function HomeSection({
                   ))}
                 </div>
               )}
+            </div>
+          ) : activeSubTab === 'adminSettings' ? (
+            <div className="p-6 space-y-6 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert className="text-amber-500" size={20} />
+                    <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-slate-100">
+                      {language === 'bn' ? "এডমিন সেটিংস: ইমার্জেন্সি ব্যালেন্স পলিসি" : "ADMIN CONTROLS: EMERGENCY BALANCE POLICY"}
+                    </h3>
+                  </div>
+                  <p className="text-xs text-slate-500 font-medium mt-1 leading-relaxed">
+                    {language === 'bn'
+                      ? "অপারেটরদের জরুরি প্রয়োজনে ইনস্ট্যান্ট ক্যাশ যোগ করার অনুমতি ও সীমা নির্ধারণ করুন। সকল তথ্য ক্লাউড ফায়ারবেসে তাৎক্ষণিকভাবে আপডেট হবে।"
+                      : "Configure emergency top-up allowances and frequency limits per user. Saved directly to Firestore settings collection."}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/40 px-3 py-1.5 rounded-lg">
+                  <span className="text-amber-700 dark:text-amber-300 text-xs font-black">
+                    {language === 'bn' ? 'সক্রিয় পলিসি:' : 'Active Policy:'}
+                  </span>
+                  <span className="text-xs font-black text-slate-800 dark:text-slate-200">
+                    ৳{emergencySettings.emergencyAmount.toLocaleString()} • {emergencySettings.dailyLimit} {language === 'bn' ? 'বার/দিন' : 'times/day'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Settings Configuration Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Form Card */}
+                <div className="lg:col-span-2 bg-slate-50 dark:bg-slate-950 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-5">
+                  <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                    <SlidersHorizontal size={15} className="text-amber-500" />
+                    {language === 'bn' ? "পলিসি প্যারামিটার নির্ধারণ" : "Policy Parameters Setup"}
+                  </h4>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-black uppercase text-slate-600 dark:text-slate-400 block">
+                        {language === 'bn' ? "ইমার্জেন্সি ব্যালেন্স অ্যামাউন্ট (টাকা)" : "Emergency Top-up Amount (BDT)"}
+                      </label>
+                      <input 
+                        type="number"
+                        placeholder={emergencySettings.emergencyAmount.toString()}
+                        value={adminEmergencyAmt}
+                        onChange={(e) => setAdminEmergencyAmt(e.target.value)}
+                        className="w-full px-3.5 py-2.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-bold text-slate-800 dark:text-slate-200 outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                      {/* Quick Presets */}
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {[5000, 10000, 15000, 20000, 25000].map(amt => (
+                          <button
+                            key={amt}
+                            type="button"
+                            onClick={() => setAdminEmergencyAmt(amt.toString())}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border cursor-pointer transition-colors ${
+                              adminEmergencyAmt === amt.toString() || (!adminEmergencyAmt && emergencySettings.emergencyAmount === amt)
+                                ? 'bg-amber-500 text-white border-amber-600'
+                                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-amber-400'
+                            }`}
+                          >
+                            ৳{amt.toLocaleString()}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-black uppercase text-slate-600 dark:text-slate-400 block">
+                        {language === 'bn' ? "দৈনিক সর্বোচ্চ অনুমোদিত সীমা (বার)" : "Daily Frequency Limit (Times)"}
+                      </label>
+                      <input 
+                        type="number"
+                        min="1"
+                        max="10"
+                        placeholder={emergencySettings.dailyLimit.toString()}
+                        value={adminEmergencyLim}
+                        onChange={(e) => setAdminEmergencyLim(e.target.value)}
+                        className="w-full px-3.5 py-2.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-bold text-slate-800 dark:text-slate-200 outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                      {/* Quick Presets */}
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {[1, 2, 3, 5].map(lim => (
+                          <button
+                            key={lim}
+                            type="button"
+                            onClick={() => setAdminEmergencyLim(lim.toString())}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border cursor-pointer transition-colors ${
+                              adminEmergencyLim === lim.toString() || (!adminEmergencyLim && emergencySettings.dailyLimit === lim)
+                                ? 'bg-amber-500 text-white border-amber-600'
+                                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-amber-400'
+                            }`}
+                          >
+                            {lim} {language === 'bn' ? 'বার' : 'time(s)'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex items-center justify-between">
+                    <p className="text-[10px] text-slate-400 italic">
+                      {language === 'bn' ? '* পরিবর্তনগুলো ক্লাউড ডাটাবেসে সেভ হবে' : '* Configurations synced to Firestore'}
+                    </p>
+                    <button
+                      onClick={() => {
+                        const amt = adminEmergencyAmt ? parseFloat(adminEmergencyAmt) : emergencySettings.emergencyAmount;
+                        const lim = adminEmergencyLim ? parseInt(adminEmergencyLim, 10) : emergencySettings.dailyLimit;
+                        if (onSaveEmergencySettings) {
+                          onSaveEmergencySettings(amt, lim);
+                        }
+                      }}
+                      className="px-5 py-2.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white text-xs font-black rounded-lg uppercase tracking-wider transition-all flex items-center gap-2 shadow-sm cursor-pointer"
+                    >
+                      <Save size={15} />
+                      <span>{language === 'bn' ? "পলিসি সংরক্ষণ করুন" : "Save Configurations"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status Card */}
+                <div className="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm flex flex-col justify-between">
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Zap className="text-amber-500" size={16} />
+                      <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                        {language === 'bn' ? "লাইভ স্ট্যাটাস ওভারভিউ" : "Live Policy Status"}
+                      </h4>
+                    </div>
+
+                    <div className="bg-amber-50/70 dark:bg-amber-950/30 p-3.5 rounded-lg border border-amber-200 dark:border-amber-900/40 space-y-2">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-500">{language === 'bn' ? 'টপ-আপ পরিমাণ:' : 'Top-up Amount:'}</span>
+                        <span className="font-black text-amber-700 dark:text-amber-400">৳{emergencySettings.emergencyAmount.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-500">{language === 'bn' ? 'ব্যবহারের দৈনিক সীমা:' : 'Daily Limit:'}</span>
+                        <span className="font-black text-slate-800 dark:text-slate-200">{emergencySettings.dailyLimit} {language === 'bn' ? 'বার/অপারেটর' : 'time(s)/user'}</span>
+                      </div>
+                      {emergencySettings.lastUpdated && (
+                        <div className="text-[10px] text-slate-400 pt-1 border-t border-amber-100 dark:border-amber-900/30">
+                          {language === 'bn' ? 'সর্বশেষ আপডেট:' : 'Last modified:'} {new Date(emergencySettings.lastUpdated).toLocaleDateString()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => setActiveSubTab('cashLedger')}
+                    className="w-full py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 text-xs font-bold rounded uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>💵 {language === 'bn' ? "ক্যাশ লেজার অডিট দেখুন" : "View Cash Ledger Audit"}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Emergency Transactions Log in Admin Settings */}
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden space-y-3 p-5">
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🚨</span>
+                    <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                      {language === 'bn' ? "সাম্প্রতিক ইমার্জেন্সি ব্যালেন্স গ্রহণের হিস্ট্রি" : "Recent Emergency Top-up Logs"}
+                    </h4>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300">
+                    {cashLedger.filter(e => !e.isDeleted && (e.type === 'emergency_topup' || e.isEmergency)).length} {language === 'bn' ? 'টি এন্ট্রি' : 'entries'}
+                  </span>
+                </div>
+
+                {cashLedger.filter(e => !e.isDeleted && (e.type === 'emergency_topup' || e.isEmergency)).length === 0 ? (
+                  <div className="py-8 text-center text-xs font-bold text-slate-400 bg-slate-50 dark:bg-slate-950 rounded-lg">
+                    {language === 'bn' ? "এখনো কোনো ইমার্জেন্সি ব্যালেন্স গ্রহণ করা হয়নি।" : "No emergency balance top-ups requested yet."}
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 dark:bg-slate-950 text-[10px] text-slate-400 uppercase font-black tracking-wider border-b border-slate-100 dark:border-slate-800">
+                          <th className="px-3.5 py-2.5">Date & Time</th>
+                          <th className="px-3.5 py-2.5">Operator</th>
+                          <th className="px-3.5 py-2.5 text-right">Amount</th>
+                          <th className="px-3.5 py-2.5 text-right">Balance After</th>
+                          <th className="px-3.5 py-2.5">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {cashLedger
+                          .filter(e => !e.isDeleted && (e.type === 'emergency_topup' || e.isEmergency))
+                          .map(entry => (
+                            <tr key={entry.id} className="bg-amber-50/60 dark:bg-amber-950/20 hover:bg-amber-50 dark:hover:bg-amber-950/40">
+                              <td className="px-3.5 py-2.5 font-bold text-slate-500 whitespace-nowrap">
+                                {new Date(entry.timestamp).toLocaleString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                              </td>
+                              <td className="px-3.5 py-2.5 font-black text-slate-800 dark:text-slate-100 whitespace-nowrap">
+                                👤 {entry.operatorName || entry.createdBy}
+                              </td>
+                              <td className="px-3.5 py-2.5 text-right font-black text-amber-700 dark:text-amber-400 whitespace-nowrap">
+                                +৳{entry.amount.toFixed(2)}
+                              </td>
+                              <td className="px-3.5 py-2.5 text-right font-black text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                                ৳{entry.balanceAfter.toFixed(2)}
+                              </td>
+                              <td className="px-3.5 py-2.5 whitespace-nowrap">
+                                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-amber-500 text-white shadow-xs inline-flex items-center gap-1">
+                                  <span>🚨</span> Emergency Top-up
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           ) : null}
         </div>
@@ -4429,11 +4989,27 @@ function HomeSection({
   );
 }
 
-function CompactStatCard({ label, value, unit, bg, text = 'text-slate-800 dark:text-slate-100' }: { label: string, value: string, unit: string, bg: string, text?: string }) {
+function CompactStatCard({ 
+  label, 
+  value, 
+  unit, 
+  bg, 
+  text = 'text-slate-800 dark:text-slate-100',
+  labelColorClass,
+  unitColorClass
+}: { 
+  label: string; 
+  value: string; 
+  unit: string; 
+  bg: string; 
+  text?: string;
+  labelColorClass?: string;
+  unitColorClass?: string;
+}) {
   const isDarkBg = bg.includes('bg-indigo') || bg.includes('bg-slate-900') || bg.includes('bg-black');
   const finalBg = bg === 'bg-white' ? 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800' : bg;
-  const labelColor = isDarkBg ? 'text-indigo-200' : 'text-slate-400 dark:text-slate-500';
-  const unitColor = isDarkBg ? 'text-indigo-200 font-bold' : 'text-slate-400 font-bold';
+  const labelColor = labelColorClass || (isDarkBg ? 'text-indigo-200' : 'text-slate-400 dark:text-slate-500');
+  const unitColor = unitColorClass || (isDarkBg ? 'text-indigo-200 font-bold' : 'text-slate-400 font-bold');
 
   return (
     <div className={`${finalBg} p-6 rounded-xl shadow-sm border`}>
@@ -4463,6 +5039,9 @@ interface CalculatorProps {
   currentUserEmail?: string | null;
   onDirtyChange?: (isDirty: boolean) => void;
   clearFormSignal?: number;
+  onRequestEmergencyTopUp?: () => Promise<boolean | void>;
+  emergencySettings?: EmergencySettings;
+  userTodayEmergencyCount?: number;
 }
 
 function CalculatorSection({ 
@@ -4479,7 +5058,10 @@ function CalculatorSection({
   currentUser,
   currentUserEmail,
   onDirtyChange,
-  clearFormSignal
+  clearFormSignal,
+  onRequestEmergencyTopUp,
+  emergencySettings,
+  userTodayEmergencyCount = 0
 }: CalculatorProps) {
   // Backdated and manual override states
   const [isBackdated, setIsBackdated] = useState(false);
@@ -4535,16 +5117,16 @@ function CalculatorSection({
   const getInputStyle = (baseClasses: string) => {
     if (isSoftWarningActive) {
       return baseClasses
-        .replace(/border-slate-[0-9]+/g, 'border-red-500')
-        .replace(/dark:border-slate-[0-9]+/g, 'dark:border-red-500')
-        .replace(/bg-slate-[0-9\/]+/g, 'bg-red-50')
-        .replace(/dark:bg-slate-[0-9\/]+/g, 'dark:bg-red-950/40')
-        .replace(/bg-white/g, 'bg-red-50')
-        .replace(/dark:bg-slate-900/g, 'dark:bg-red-950/40')
-        .replace(/focus:ring-yellow-400/g, 'focus:ring-red-500')
-        + " border-2 border-red-500 focus:ring-2 focus:ring-red-500 bg-red-50 dark:bg-red-950/40 ring-2 ring-red-500/60 shadow-md shadow-red-500/20 transition-all";
+        .replace(/border-[a-z]+-[0-9]+/g, '')
+        .replace(/dark:border-[a-z]+-[0-9]+/g, '')
+        .replace(/bg-slate-[0-9\/]+/g, '')
+        .replace(/dark:bg-slate-[0-9\/]+/g, '')
+        .replace(/bg-white/g, '')
+        .replace(/dark:bg-slate-900/g, '')
+        .replace(/focus:ring-yellow-400/g, '')
+        + " border-2 border-red-500 focus:border-red-600 focus:ring-2 focus:ring-red-500/60 bg-red-50/80 dark:bg-red-950/40 ring-2 ring-red-500/50 shadow-md shadow-red-500/20 rounded-md transition-all duration-150";
     }
-    return baseClasses + " shadow-sm hover:shadow-md border-slate-300 dark:border-slate-700 rounded-lg transition-all";
+    return baseClasses + " shadow-sm hover:shadow focus:shadow-md border-gray-300 dark:border-slate-700 rounded-md transition-all duration-150";
   };
 
   // Minus Calculate states
@@ -5429,7 +6011,7 @@ function CalculatorSection({
         </div>
 
         {/* Real-time Cash Box Balance Widget */}
-        <div className="mb-6 p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-all bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800">
+        <div className="mb-6 p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-all bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 shadow-sm">
           <div className="space-y-1">
             <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 block">
               {language === 'bn' ? 'চলতি ক্যাশ ব্যালেন্স (রিয়েল-টাইম)' : 'CURRENT AVAILABLE CASH BALANCE (REAL-TIME)'}
@@ -5440,30 +6022,52 @@ function CalculatorSection({
             </div>
           </div>
 
-          {cashBoxBalance < 2000 && (
-            <div className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 px-3.5 py-2 rounded-lg text-xs font-black uppercase tracking-wide flex items-center gap-2 animate-pulse">
-              <span>⚠️</span>
-              <span>
-                {language === 'bn' 
-                  ? 'ক্যাশ বক্স ব্যালেন্স কম: দয়া করে অ্যাডমিনকে রিফিল করতে বলুন!' 
-                  : 'Low Balance: Please ask Admin to Top-Up!'}
-              </span>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {cashBoxBalance < 2000 && (
+              <div className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide flex items-center gap-1.5 animate-pulse">
+                <span>⚠️</span>
+                <span>
+                  {language === 'bn' 
+                    ? 'ক্যাশ বক্স ব্যালেন্স কম' 
+                    : 'Low Balance'}
+                </span>
+              </div>
+            )}
+
+            {onRequestEmergencyTopUp && emergencySettings && (
+              <button
+                type="button"
+                onClick={() => onRequestEmergencyTopUp()}
+                disabled={userTodayEmergencyCount >= (emergencySettings.dailyLimit ?? 1)}
+                className={`px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-sm ${
+                  userTodayEmergencyCount >= (emergencySettings.dailyLimit ?? 1)
+                    ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700'
+                    : 'bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 shadow-amber-500/20 cursor-pointer'
+                }`}
+              >
+                <AlertTriangle size={14} className="text-slate-950" />
+                <span>
+                  {language === 'bn' 
+                    ? `ইমার্জেন্সি ব্যালেন্স (${userTodayEmergencyCount}/${emergencySettings.dailyLimit})` 
+                    : `Emergency Top-Up (${userTodayEmergencyCount}/${emergencySettings.dailyLimit})`}
+                </span>
+              </button>
+            )}
+          </div>
         </div>
         
         {!isMinusMode ? (
           <>
-            {/* Soft Warning Banner after calculation when inputs are edited */}
+            {/* Warning Banner immediately triggered upon Calculate */}
             {isSoftWarningActive && (
-              <div className="mb-4 p-3 bg-red-50 dark:bg-red-950/40 border-2 border-red-500/80 dark:border-red-600 text-red-700 dark:text-red-300 rounded-xl flex items-center justify-between gap-2 text-xs font-black animate-pulse shadow-sm">
+              <div className="mb-4 p-3.5 bg-red-50 dark:bg-red-950/50 border-2 border-red-500 text-red-700 dark:text-red-300 rounded-xl flex items-center justify-between gap-3 text-xs font-black animate-pulse shadow-md shadow-red-500/20">
                 <div className="flex items-center gap-2">
                   <span className="text-base">⚠️</span>
                   <span className="text-red-800 dark:text-red-200 text-sm font-black">
                     {language === 'bn' ? 'হিসাবটি সেভ করা হয়নি!' : 'Calculation is not saved!'}
                   </span>
                 </div>
-                <span className="text-xs font-extrabold text-red-600 dark:text-red-400">
+                <span className="text-xs font-extrabold text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/40 px-2.5 py-1 rounded-md border border-red-200 dark:border-red-800">
                   {language === 'bn' 
                     ? 'দয়া করে হিসাবটি সেভ অথবা ক্লিয়ার করুন।' 
                     : 'Please Save or Clear the calculation.'}
@@ -5701,19 +6305,19 @@ function CalculatorSection({
           </>
         ) : (
           <div className="space-y-6">
-            {/* Soft Warning Banner after calculation when inputs are edited */}
+            {/* Warning Banner immediately triggered upon Calculate (Minus Mode) */}
             {isSoftWarningActive && (
-              <div className="p-3 bg-red-50 dark:bg-red-950/40 border-2 border-red-500/80 dark:border-red-600 text-red-700 dark:text-red-300 rounded-xl flex items-center justify-between gap-2 text-xs font-black animate-pulse shadow-sm">
+              <div className="p-3.5 bg-red-50 dark:bg-red-950/50 border-2 border-red-500 text-red-700 dark:text-red-300 rounded-xl flex items-center justify-between gap-3 text-xs font-black animate-pulse shadow-md shadow-red-500/20">
                 <div className="flex items-center gap-2">
                   <span className="text-base">⚠️</span>
                   <span className="text-red-800 dark:text-red-200 text-sm font-black">
                     {language === 'bn' ? 'হিসাবটি সেভ করা হয়নি!' : 'Calculation is not saved!'}
                   </span>
                 </div>
-                <span className="text-[11px] font-extrabold text-red-600 dark:text-red-400">
+                <span className="text-xs font-extrabold text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/40 px-2.5 py-1 rounded-md border border-red-200 dark:border-red-800">
                   {language === 'bn' 
-                    ? 'ইনপুট পরিবর্তন করা হয়েছে, সেভ অথবা পুনঃহিসাব করুন।' 
-                    : 'Inputs modified. Please Save or Calculate again.'}
+                    ? 'দয়া করে হিসাবটি সেভ অথবা ক্লিয়ার করুন।' 
+                    : 'Please Save or Clear the calculation.'}
                 </span>
               </div>
             )}
@@ -6863,7 +7467,7 @@ function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       <div className="md:col-span-1">
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 transition-all">
+        <div className="bg-[#aeae34] p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 transition-all">
           <h3 className="text-xs font-black uppercase mb-4 text-slate-400 dark:text-slate-500 tracking-wider font-sans">{t.addNote}</h3>
           <div className="space-y-4">
             <input 
@@ -6876,14 +7480,14 @@ function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: 
             <textarea 
               placeholder={t.home === 'হোম' ? "নোটের বিবরণ লিখুন..." : "Enter note details..."}
               rows={6}
-              className="w-full px-4 py-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-medium text-slate-900 dark:text-white outline-none resize-none focus:ring-1 focus:ring-yellow-400"
+              className="w-full px-4 py-3.5 bg-slate-50 dark:bg-slate-950 border-4 border-double border-[#2cbb4b] rounded-[5px] text-xs font-medium text-slate-900 dark:text-white outline-none resize-none focus:ring-1 focus:ring-yellow-400"
               value={note.content}
               onChange={e => setNote({ ...note, content: e.target.value })}
             />
             <button 
               onClick={handleAdd}
               disabled={!note.title || !note.content}
-              className="w-full h-11 bg-yellow-400 text-black font-black uppercase text-[11px] tracking-wider rounded transition-all active:scale-95 disabled:opacity-50"
+              className="w-full h-11 bg-[#ecfd00] text-black font-black uppercase text-[11px] tracking-wider rounded transition-all active:scale-95 disabled:opacity-50"
             >
               {t.saveNote}
             </button>
@@ -6893,10 +7497,10 @@ function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: 
       
       <div className="md:col-span-2 space-y-4">
         {notes.length === 0 ? (
-          <div className="p-12 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-300 dark:text-slate-600 font-bold uppercase text-[10px]">{t.noNotes}</div>
+          <div className="p-12 text-center border-2 border-dashed border-[#2c922e] rounded-xl text-slate-300 dark:text-slate-600 font-bold uppercase text-[10px]">{t.noNotes}</div>
         ) : (
           notes.map(n => (
-            <div key={n.id} className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 transition-all">
+            <div key={n.id} className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm border border-[#2c922e] transition-all">
               <div className="flex justify-between items-start mb-2">
                 <h4 className="font-black text-base text-slate-800 dark:text-slate-100">{n.title}</h4>
                 <button onClick={() => onDelete(n.id)} className="text-slate-300 hover:text-red-600 dark:text-slate-600 dark:hover:text-red-500">
