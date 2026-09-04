@@ -805,37 +805,76 @@ export default function App() {
 
 _এ. এস এন্টারপ্রাইজ_`;
 
-      const response = await fetch('/api/telegram', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          text: messageText,
-          parse_mode: 'Markdown'
-        })
-      });
+      // Try via /api/telegram and fallback to direct Telegram fetch with exact token
+      let isDelivered = false;
+      let deliveryMsg = '';
+      let lastErr = '';
 
-      const data = await response.json().catch(() => ({}));
+      try {
+        const response = await fetch('/api/telegram', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            text: messageText,
+            parse_mode: 'Markdown'
+          })
+        });
 
-      if (!response.ok || !data.success) {
-        const errorMsg = data?.error || `HTTP ${response.status}`;
-        return {
-          success: false,
-          error: errorMsg,
-          rawError: JSON.stringify(data)
-        };
+        const data = await response.json().catch(() => ({}));
+        if (response.ok && data.success) {
+          isDelivered = true;
+          deliveryMsg = data?.message || 'Delivered to Telegram via /api/telegram';
+        } else {
+          lastErr = data?.error || `HTTP ${response.status}`;
+        }
+      } catch (apiErr: any) {
+        lastErr = apiErr?.message || 'Network error connecting to /api/telegram';
+      }
+
+      if (!isDelivered) {
+        try {
+          const directUrl = 'https://api.telegram.org/bot8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE/sendMessage';
+          const directRes = await fetch(directUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: '1158719251',
+              text: messageText,
+              parse_mode: 'Markdown'
+            })
+          });
+          const directData = await directRes.json().catch(() => ({}));
+          if (directRes.ok && directData.ok) {
+            isDelivered = true;
+            deliveryMsg = 'Delivered to Chat ID 1158719251 via @SmEnterprise_bot';
+          } else {
+            const fallbackError = directData?.description || lastErr || `Telegram Error (${directRes.status})`;
+            return {
+              success: false,
+              error: fallbackError,
+              rawError: JSON.stringify(directData)
+            };
+          }
+        } catch (directErr: any) {
+          return {
+            success: false,
+            error: lastErr || directErr?.message || 'Failed to send Telegram notification',
+            rawError: String(directErr)
+          };
+        }
       }
 
       return {
         success: true,
-        details: data?.message || 'Delivered to Telegram via /api/telegram'
+        details: deliveryMsg || 'Delivered successfully'
       };
     } catch (err: any) {
       console.warn("Telegram live notification error (non-fatal):", err);
       return {
         success: false,
-        error: err?.message || 'Network error connecting to /api/telegram'
+        error: err?.message || 'Network error connecting to Telegram'
       };
     }
   };

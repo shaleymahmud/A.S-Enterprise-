@@ -3,7 +3,7 @@ import path from "path";
 import { GoogleGenAI } from "@google/genai";
 
 // Hardcoded Bot Token and Chat ID as requested
-export const TELEGRAM_BOT_TOKEN = "8923534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE";
+export const TELEGRAM_BOT_TOKEN = "8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE";
 export const DEFAULT_CHAT_ID = "1158719251";
 
 interface Subscriber {
@@ -126,7 +126,7 @@ export function completeAction(actionId: string) {
 export async function sendTelegramMessage(chatId: string, text: string, parseMode: "Markdown" | "HTML" = "Markdown"): Promise<{ ok: boolean; description?: string }> {
   try {
     const targetChatId = chatId || "1158719251";
-    const url = "https://api.telegram.org/bot8923534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE/sendMessage";
+    const url = "https://api.telegram.org/bot8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE/sendMessage";
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -430,7 +430,7 @@ export function startTelegramPolling() {
   async function pollLoop() {
     while (isPollingActive) {
       try {
-        const url = `https://api.telegram.org/bot8923534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE/getUpdates?offset=${offset}&timeout=20`;
+        const url = `https://api.telegram.org/bot8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE/getUpdates?offset=${offset}&timeout=20`;
         const res = await fetch(url);
         if (!res.ok) {
           const errText = await res.text();
