@@ -7,9 +7,16 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // Hardcoded exact Telegram credentials for reliable preview & production delivery
-  const botToken = "8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE";
-  const defaultChatId = "1158719251";
+  // Secure serverless handler: Read bot token strictly from server environment variables
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const defaultChatId = process.env.TELEGRAM_CHAT_ID || "1158719251";
+
+  if (!botToken) {
+    return res.status(500).json({
+      success: false,
+      error: 'TELEGRAM_BOT_TOKEN is not configured in server environment variables. Please ensure it is added in your Vercel Environment Variables.'
+    });
+  }
 
   try {
     const { text, parse_mode = 'Markdown', chat_id } = req.body || {};

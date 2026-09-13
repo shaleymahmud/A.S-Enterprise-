@@ -2,9 +2,9 @@ import fs from "fs";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
 
-// Hardcoded Bot Token and Chat ID as requested
-export const TELEGRAM_BOT_TOKEN = "8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE";
-export const DEFAULT_CHAT_ID = "1158719251";
+// Telegram Bot credentials read from server environment variables (never exposed to client)
+export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+export const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "1158719251";
 
 interface Subscriber {
   chatId: string;
@@ -125,8 +125,11 @@ export function completeAction(actionId: string) {
 // Low-level message sender
 export async function sendTelegramMessage(chatId: string, text: string, parseMode: "Markdown" | "HTML" = "Markdown"): Promise<{ ok: boolean; description?: string }> {
   try {
-    const targetChatId = chatId || "1158719251";
-    const url = "https://api.telegram.org/bot8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE/sendMessage";
+    if (!TELEGRAM_BOT_TOKEN) {
+      return { ok: false, description: "TELEGRAM_BOT_TOKEN is not configured in server environment variables." };
+    }
+    const targetChatId = chatId || DEFAULT_CHAT_ID;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -422,6 +425,10 @@ async function handleIncomingMessage(chatId: string, text: string, senderName: s
 // Background long-polling engine
 export function startTelegramPolling() {
   if (isPollingActive) return;
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.log("Telegram Bot Long-Polling skipped: TELEGRAM_BOT_TOKEN not configured in server environment.");
+    return;
+  }
   isPollingActive = true;
   console.log("Starting Telegram Bot Long-Polling for @SmEnterprise_bot...");
 
@@ -430,7 +437,7 @@ export function startTelegramPolling() {
   async function pollLoop() {
     while (isPollingActive) {
       try {
-        const url = `https://api.telegram.org/bot8033534295:AAH8GVwzQK4TN-6LgPxopjMBNUuAxmLVpKE/getUpdates?offset=${offset}&timeout=20`;
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${offset}&timeout=20`;
         const res = await fetch(url);
         if (!res.ok) {
           const errText = await res.text();
