@@ -11,25 +11,7 @@ import {
   Briefcase,
   Download
 } from 'lucide-react';
-
-interface Calculation {
-  id: string;
-  timestamp: number;
-  sellerName: string;
-  totalKg: number;
-  monType: number;
-  ratePerMon: number;
-  totalMon: number;
-  totalPrice: number;
-  challanNo: number;
-  createdBy: string;
-  deductedWeight?: number;
-  deductionPercentage?: number;
-  isMinusCalculated?: boolean;
-  targetMonPrice?: number;
-  getEntryNo?: number;
-  isDeleted?: boolean;
-}
+import { Calculation, getCalculationDisplay } from '../utils/calculationNormalizer';
 
 interface BillingSectionProps {
   calculations: Calculation[];
@@ -92,19 +74,29 @@ export default function BillingSection({ calculations, language, onDownloadImage
     let totalPriceByChallan = 0;
 
     filteredCalculations.forEach(calc => {
-      totalKg += calc.totalKg;
+      const safeKg = typeof calc.totalKg === 'number' && !isNaN(calc.totalKg)
+        ? calc.totalKg
+        : (typeof (calc as any).weightKg === 'number' ? (calc as any).weightKg : 0);
+      totalKg += safeKg;
       
       // Handle minus deduction weight if available
       const deduction = (calc.isMinusCalculated && calc.deductedWeight !== undefined) 
         ? calc.deductedWeight 
         : 0;
-      const currentNetKg = Math.max(0, calc.totalKg - deduction);
+      const currentNetKg = Math.max(0, safeKg - deduction);
       netKg += currentNetKg;
 
-      // Use stored calculation mon type, default to 40
-      const currentMonType = calc.monType || 40;
-      totalMonDecimal += (currentNetKg / currentMonType);
-      totalPriceByChallan += calc.totalPrice;
+      // Use stored calculation mon type, default to 41
+      const currentMonType = calc.monType || 41;
+      const monVal = currentMonType > 0 ? (currentNetKg / currentMonType) : 0;
+      totalMonDecimal += monVal;
+
+      const safePrice = typeof calc.totalPrice === 'number' && !isNaN(calc.totalPrice)
+        ? calc.totalPrice
+        : (typeof (calc as any).totalAmount === 'number' && !isNaN((calc as any).totalAmount)
+          ? (calc as any).totalAmount
+          : monVal * (calc.ratePerMon || (calc as any).rate || 0));
+      totalPriceByChallan += safePrice;
     });
 
     // Custom Rate Calculation: total mon decimal * custom rate per mon
@@ -408,34 +400,38 @@ export default function BillingSection({ calculations, language, onDownloadImage
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-[11px]">
                   {filteredCalculations.map((calc) => {
-                    const deduction = (calc.isMinusCalculated && calc.deductedWeight !== undefined) ? calc.deductedWeight : 0;
-                    const netKg = Math.max(0, calc.totalKg - deduction);
-                    const monType = calc.monType || 40;
-                    const monVal = netKg / monType;
+                    const disp = getCalculationDisplay(calc, language);
+                    const safeKg = disp.grossKg !== null ? disp.grossKg : 0;
+                    const deduction = disp.deductedKg;
+                    const netKg = disp.netKg !== null ? disp.netKg : safeKg;
+                    const monType = disp.monType || 41;
+                    const monVal = monType > 0 ? netKg / monType : 0;
+                    const safeChallanRate = disp.ratePerMon !== null ? disp.ratePerMon : 0;
+                    const safePrice = disp.totalPrice !== null ? disp.totalPrice : (monVal * safeChallanRate);
                     const displayPrice = rateMode === 'challan' 
-                      ? calc.totalPrice 
+                      ? safePrice 
                       : monVal * (parseFloat(customRate) || 0);
 
                     return (
                       <tr key={calc.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-700 dark:text-slate-300">
                         <td className="px-4 py-3 font-medium whitespace-nowrap">
-                          {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US', {day: 'numeric', month: 'short'})}
+                          {disp.dateDisplay}
                         </td>
                         <td className="px-3 py-3 font-bold text-rose-600">
-                          #{calc.challanNo}
+                          {disp.challanDisplay}
                         </td>
                         <td className="px-3 py-3 font-bold truncate max-w-[120px]">
-                          {calc.sellerName}
+                          {disp.sellerDisplay}
                         </td>
                         <td className="px-3 py-3 font-semibold whitespace-nowrap">
-                          <div>{calc.totalKg} KG</div>
+                          <div>{disp.weightDisplay}</div>
                           {deduction > 0 && <div className="text-[9px] text-red-500">(-{deduction} KG)</div>}
                         </td>
                         <td className="px-3 py-3 font-semibold">
-                          ৳{rateMode === 'challan' ? calc.ratePerMon : customRate}
+                          {rateMode === 'challan' ? disp.rateDisplay : `৳${customRate}`}
                         </td>
                         <td className="px-4 py-3 font-black text-right text-slate-900 dark:text-white">
-                          ৳{Math.round(displayPrice).toLocaleString()}
+                          {rateMode === 'challan' ? disp.totalPriceDisplay : `৳${Math.round(displayPrice).toLocaleString()}`}
                         </td>
                       </tr>
                     );
@@ -532,15 +528,15 @@ export default function BillingSection({ calculations, language, onDownloadImage
                     </thead>
                     <tbody className="text-[10px] font-semibold divide-y divide-slate-300">
                       {filteredCalculations.map((calc, idx) => {
-                        const deduction = (calc.isMinusCalculated && calc.deductedWeight !== undefined) ? calc.deductedWeight : 0;
-                        const netKg = Math.max(0, calc.totalKg - deduction);
-                        const monType = calc.monType || 40;
-                        const monCount = Math.floor(netKg / monType);
-                        const extraKg = parseFloat((netKg % monType).toFixed(2));
-                        
-                        const monVal = netKg / monType;
+                        const disp = getCalculationDisplay(calc, language);
+                        const safeKg = disp.grossKg !== null ? disp.grossKg : 0;
+                        const netKg = disp.netKg !== null ? disp.netKg : safeKg;
+                        const monType = disp.monType || 41;
+                        const monVal = monType > 0 ? netKg / monType : 0;
+                        const safeChallanRate = disp.ratePerMon !== null ? disp.ratePerMon : 0;
+                        const safePrice = disp.totalPrice !== null ? disp.totalPrice : (monVal * safeChallanRate);
                         const displayPrice = rateMode === 'challan' 
-                          ? calc.totalPrice 
+                          ? safePrice 
                           : monVal * (parseFloat(customRate) || 0);
 
                         return (
@@ -549,26 +545,24 @@ export default function BillingSection({ calculations, language, onDownloadImage
                               {language === 'bn' ? toBengaliDigits(idx + 1) : idx + 1}
                             </td>
                             <td className="px-3 py-2 border-r border-slate-300 whitespace-nowrap">
-                              {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US', {day: 'numeric', month: 'short'})}
+                              {disp.dateDisplay}
                             </td>
                             <td className="px-3 py-2 border-r border-slate-300 text-center font-bold">
-                              #{calc.challanNo}
+                              {disp.challanDisplay}
                             </td>
                             {selectedSeller === 'ALL' && (
                               <td className="px-3 py-2 border-r border-slate-300 truncate max-w-[80px]">
-                                {calc.sellerName}
+                                {disp.sellerDisplay}
                               </td>
                             )}
                             <td className="px-3 py-2 border-r border-slate-300 text-right font-bold">
-                              {language === 'bn' ? toBengaliDigits(netKg) : netKg}
+                              {disp.netKg !== null ? (language === 'bn' ? toBengaliDigits(disp.netKg) : disp.netKg) : '—'}
                             </td>
                             <td className="px-3 py-2 border-r border-slate-300 text-right whitespace-nowrap">
-                              {language === 'bn' 
-                                ? `${toBengaliDigits(monCount)} মণ ${toBengaliDigits(extraKg)} কেজি`
-                                : `${monCount} M ${extraKg} K`}
+                              {disp.monDisplay}
                             </td>
                             <td className="px-3 py-2 text-right font-black">
-                              ৳{language === 'bn' ? toBengaliDigits(Math.round(displayPrice)) : Math.round(displayPrice)}
+                              {rateMode === 'challan' ? disp.totalPriceDisplay : (language === 'bn' ? `৳${toBengaliDigits(Math.round(displayPrice))}` : `৳${Math.round(displayPrice)}`)}
                             </td>
                           </tr>
                         );

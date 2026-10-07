@@ -39,15 +39,24 @@ import {
   X,
   ExternalLink,
   RefreshCw,
-  AlertCircle
+  AlertCircle,
+  Eye,
+  Layers,
+  ChevronLeft,
+  ChevronRight,
+  Calendar
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { HistoricalDuplicateReview } from './components/HistoricalDuplicateReview';
+import { HistoricalCleanupCenter } from './components/HistoricalCleanupCenter';
 import AssistantSection from './components/AssistantSection';
 import BillingSection from './components/BillingSection';
 import ExpensesSection from './components/ExpensesSection';
 import LoginScreen from './components/LoginScreen';
+import { CalculationInspectionModal } from './components/CalculationInspectionModal';
 import { toJpeg, toPng } from 'html-to-image';
 import { auth, db } from './firebase';
+import { normalizeCalculation, getCalculationDisplay, Calculation, MonType } from './utils/calculationNormalizer';
 import { 
   onAuthStateChanged, 
   signOut,
@@ -85,31 +94,7 @@ const cleanUndefined = (obj: any): any => {
 };
 
 // --- Types ---
-
-type MonType = 40 | 41 | 42 | 43;
-
-interface Calculation {
-  id: string;
-  timestamp: number;
-  sellerName: string;
-  totalKg: number;
-  monType: MonType;
-  ratePerMon: number;
-  totalMon: number;
-  totalPrice: number;
-  challanNo: number;
-  createdBy: string;
-  createdByName?: string;
-  deductedWeight?: number;
-  deductionPercentage?: number;
-  isMinusCalculated?: boolean;
-  targetMonPrice?: number;
-  getEntryNo?: number;
-  gateEntry?: number;
-  isDeleted?: boolean;
-  deletedBy?: string;
-  deletedAt?: number;
-}
+// MonType and Calculation are imported from ./utils/calculationNormalizer
 
 interface Expense {
   id: string;
@@ -129,7 +114,7 @@ interface Note {
   createdByName?: string;
 }
 
-type Tab = 'home' | 'calculator' | 'history' | 'expenses' | 'note' | 'assistant' | 'settings' | 'billing';
+type Tab = 'home' | 'calculator' | 'history' | 'expenses' | 'note' | 'assistant' | 'settings' | 'billing' | 'duplicateReview' | 'cleanupCenter';
 type DateFilter = 'all' | 'today' | 'yesterday' | '7days' | '1month' | 'custom';
 
 interface ReceiptVisibility {
@@ -173,16 +158,23 @@ const toBengaliDigits = (num: number | string): string => {
 
 // Helper function to sort calculation arrays by Date (Descending) and then Gate Entry Number (Descending, numerically)
 const getGateEntryNumber = (calc: Calculation): number => {
-  const rawVal = calc.getEntryNo !== undefined && calc.getEntryNo !== null ? calc.getEntryNo : calc.gateEntry;
+  const rawVal = calc.getEntryNo !== undefined && calc.getEntryNo !== null 
+    ? calc.getEntryNo 
+    : (calc.gateEntryNo !== undefined && calc.gateEntryNo !== null 
+        ? calc.gateEntryNo 
+        : calc.gateEntry);
   if (rawVal === undefined || rawVal === null) return 0;
   const parsed = parseInt(String(rawVal), 10);
   return isNaN(parsed) ? 0 : parsed;
 };
 
 const sortCalculations = (a: Calculation, b: Calculation): number => {
+  const tsA = typeof a.timestamp === 'number' && !isNaN(a.timestamp) ? a.timestamp : 0;
+  const tsB = typeof b.timestamp === 'number' && !isNaN(b.timestamp) ? b.timestamp : 0;
+
   // 1. Group/Sort by Date (Descending - newest dates at the top)
-  const dateA = new Date(a.timestamp).setHours(0, 0, 0, 0);
-  const dateB = new Date(b.timestamp).setHours(0, 0, 0, 0);
+  const dateA = new Date(tsA).setHours(0, 0, 0, 0);
+  const dateB = new Date(tsB).setHours(0, 0, 0, 0);
 
   if (dateB !== dateA) {
     return dateB - dateA; // Newest calendar date first
@@ -197,8 +189,8 @@ const sortCalculations = (a: Calculation, b: Calculation): number => {
   }
 
   // 3. Fallback: exact timestamp descending, then challanNo descending
-  if (b.timestamp !== a.timestamp) {
-    return b.timestamp - a.timestamp;
+  if (tsB !== tsA) {
+    return tsB - tsA;
   }
   return (b.challanNo || 0) - (a.challanNo || 0);
 };
@@ -553,11 +545,11 @@ export default function App() {
       return;
     }
 
-    const q = query(collection(db, 'calculations'), orderBy('timestamp', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const colRef = collection(db, 'calculations');
+    const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const list: Calculation[] = [];
       snapshot.forEach((docSnap) => {
-        list.push({ ...docSnap.data(), id: docSnap.id } as Calculation);
+        list.push(normalizeCalculation(docSnap.data(), docSnap.id));
       });
       
       // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
@@ -805,8 +797,6 @@ export default function App() {
 
 _এ. এস এন্টারপ্রাইজ_`;
 
-      // Dispatch notification securely via serverless API (/api/telegram)
-      // The Telegram bot token is managed exclusively in server environment variables and never exposed to the client
       const response = await fetch('/api/telegram', {
         method: 'POST',
         headers: {
@@ -837,7 +827,7 @@ _এ. এস এন্টারপ্রাইজ_`;
       console.warn("Telegram live notification error (non-fatal):", err);
       return {
         success: false,
-        error: err?.message || 'Network error connecting to Telegram'
+        error: err?.message || 'Network error connecting to /api/telegram'
       };
     }
   };
@@ -1817,12 +1807,29 @@ _এ. এস এন্টারপ্রাইজ_`;
 
   const editCalculation = async (updated: Calculation) => {
     try {
-      const { id, ...dataToUpdate } = updated;
-      const gateEntryVal = updated.getEntryNo;
+      const { id, rawSnapshot, calculationBody, ...dataToUpdate } = updated;
+      const gateEntryVal = updated.getEntryNo !== undefined ? updated.getEntryNo : updated.gateEntryNo;
+      const safeTotalKg = typeof updated.totalKg === 'number' && !isNaN(updated.totalKg)
+        ? updated.totalKg
+        : (typeof (updated as any).weightKg === 'number' ? (updated as any).weightKg : 0);
+      const safeRate = typeof updated.ratePerMon === 'number' && !isNaN(updated.ratePerMon)
+        ? updated.ratePerMon
+        : (typeof (updated as any).rate === 'number' ? (updated as any).rate : 0);
+      const safePrice = typeof updated.totalPrice === 'number' && !isNaN(updated.totalPrice)
+        ? updated.totalPrice
+        : (typeof (updated as any).totalAmount === 'number' ? (updated as any).totalAmount : 0);
+
       const cleanedData = cleanUndefined({
         ...dataToUpdate,
+        totalKg: safeTotalKg,
+        weightKg: safeTotalKg,
+        ratePerMon: safeRate,
+        rate: safeRate,
+        totalPrice: safePrice,
+        totalAmount: safePrice,
         getEntryNo: gateEntryVal,
-        gateEntry: gateEntryVal
+        gateEntry: gateEntryVal,
+        gateEntryNo: gateEntryVal
       });
       
       // Fetch the old record for Audit logging
@@ -1947,14 +1954,34 @@ _এ. এস এন্টারপ্রাইজ_`;
       return active;
     }
     // standard user only sees their own calculations
-    return active.filter(c => c.createdBy === currentUserEmail || c.createdBy === currentUser);
+    const emailLower = (currentUserEmail || '').toLowerCase();
+    const userLower = (currentUser || '').toLowerCase();
+    return active.filter(c => {
+      const cEmail = (c.createdBy || '').toLowerCase();
+      const opEmail = (c.operatorEmail || '').toLowerCase();
+      const cName = (c.createdByName || '').toLowerCase();
+      return (
+        (emailLower && (cEmail === emailLower || opEmail === emailLower)) ||
+        (userLower && (cEmail === userLower || cName === userLower))
+      );
+    });
   }, [calculations, userRole, currentUserEmail, currentUser]);
 
   const deletedCalculations = useMemo(() => {
     const isUserAdmin = userRole === 'admin';
     const deleted = calculations.filter(c => c.isDeleted === true);
     if (isUserAdmin) return deleted;
-    return deleted.filter(c => c.createdBy === currentUserEmail || c.createdBy === currentUser);
+    const emailLower = (currentUserEmail || '').toLowerCase();
+    const userLower = (currentUser || '').toLowerCase();
+    return deleted.filter(c => {
+      const cEmail = (c.createdBy || '').toLowerCase();
+      const opEmail = (c.operatorEmail || '').toLowerCase();
+      const cName = (c.createdByName || '').toLowerCase();
+      return (
+        (emailLower && (cEmail === emailLower || opEmail === emailLower)) ||
+        (userLower && (cEmail === userLower || cName === userLower))
+      );
+    });
   }, [calculations, userRole, currentUserEmail, currentUser]);
 
   const filteredCalculations = useMemo(() => {
@@ -1963,15 +1990,16 @@ _এ. এস এন্টারপ্রাইজ_`;
 
     return scopedCalculations.filter(calc => {
       if (dateFilter === 'all') return true;
-      const diff = now - calc.timestamp;
+      const ts = typeof calc.timestamp === 'number' && !isNaN(calc.timestamp) ? calc.timestamp : 0;
+      const diff = now - ts;
       if (dateFilter === 'today') {
         const startOfDay = new Date().setHours(0, 0, 0, 0);
-        return calc.timestamp >= startOfDay;
+        return ts >= startOfDay;
       }
       if (dateFilter === 'yesterday') {
         const startOfYesterday = new Date().setHours(0, 0, 0, 0) - oneDay;
         const endOfYesterday = new Date().setHours(0, 0, 0, 0) - 1;
-        return calc.timestamp >= startOfYesterday && calc.timestamp <= endOfYesterday;
+        return ts >= startOfYesterday && ts <= endOfYesterday;
       }
       if (dateFilter === '7days') return diff <= 7 * oneDay;
       if (dateFilter === '1month') return diff <= 30 * oneDay;
@@ -1989,7 +2017,7 @@ _এ. এস এন্টারপ্রাইজ_`;
           const eDate = new Date(eY, eM - 1, eD, 23, 59, 59, 999);
           endBound = eDate.getTime();
         }
-        return calc.timestamp >= startBound && calc.timestamp <= endBound;
+        return ts >= startBound && ts <= endBound;
       }
       return true;
     });
@@ -2003,8 +2031,13 @@ _এ. এস এন্টারপ্রাইজ_`;
         const nameMatch = (calc.sellerName || '').toLowerCase().includes(query);
         const challanMatch = calc.challanNo !== undefined && calc.challanNo !== null && calc.challanNo.toString().includes(query);
         const gateMatch = (calc.getEntryNo !== undefined && calc.getEntryNo !== null && calc.getEntryNo.toString().includes(query)) ||
-                          (calc.gateEntry !== undefined && calc.gateEntry !== null && calc.gateEntry.toString().includes(query));
-        return nameMatch || challanMatch || gateMatch;
+                          (calc.gateEntry !== undefined && calc.gateEntry !== null && calc.gateEntry.toString().includes(query)) ||
+                          (calc.gateEntryNo !== undefined && calc.gateEntryNo !== null && calc.gateEntryNo.toString().includes(query));
+        const phoneMatch = (calc.sellerPhone || '').toLowerCase().includes(query);
+        const operatorMatch = (calc.createdBy || '').toLowerCase().includes(query) || 
+                              (calc.operatorEmail || '').toLowerCase().includes(query) ||
+                              (calc.createdByName || '').toLowerCase().includes(query);
+        return nameMatch || challanMatch || gateMatch || phoneMatch || operatorMatch;
       });
     }
     
@@ -2017,18 +2050,22 @@ _এ. এস এন্টারপ্রাইজ_`;
       const deduction = (curr.isMinusCalculated && curr.deductedWeight !== undefined)
         ? curr.deductedWeight
         : (curr.deductedWeight !== undefined && curr.deductedWeight > 0 ? curr.deductedWeight : 0);
-      const netKg = Math.max(0, curr.totalKg - deduction);
-      const actualBilledMon = netKg / curr.monType;
+      const safeKg = curr.totalKg || curr.weightKg || 0;
+      const netKg = Math.max(0, safeKg - deduction);
+      const monType = curr.monType || 41;
+      const actualBilledMon = monType > 0 ? netKg / monType : 0;
       const businessMon = netKg / 41; // 41 KG = 1 Mon business standard
       const gainMon = businessMon - actualBilledMon;
-      const gainProfit = gainMon * curr.ratePerMon;
+      const safeRate = curr.ratePerMon || curr.rate || 0;
+      const gainProfit = gainMon * safeRate;
+      const safePrice = curr.totalPrice || curr.totalAmount || 0;
 
       return {
-        totalKg: acc.totalKg + netKg,
-        totalMon: acc.totalMon + actualBilledMon,
-        totalPrice: acc.totalPrice + curr.totalPrice,
-        totalBusinessMon: acc.totalBusinessMon + businessMon,
-        weightGainProfit: acc.weightGainProfit + gainProfit
+        totalKg: acc.totalKg + (isNaN(netKg) ? 0 : netKg),
+        totalMon: acc.totalMon + (isNaN(actualBilledMon) ? 0 : actualBilledMon),
+        totalPrice: acc.totalPrice + (isNaN(safePrice) ? 0 : safePrice),
+        totalBusinessMon: acc.totalBusinessMon + (isNaN(businessMon) ? 0 : businessMon),
+        weightGainProfit: acc.weightGainProfit + (isNaN(gainProfit) ? 0 : gainProfit)
       };
     }, { totalKg: 0, totalMon: 0, totalPrice: 0, totalBusinessMon: 0, weightGainProfit: 0 });
   }, [filteredCalculations]);
@@ -2095,26 +2132,24 @@ _এ. এস এন্টারপ্রাইজ_`;
       : ['Date', 'Challan No', 'Gate Entry No', 'Seller Name', 'Total Weight (KG)', 'Mon Type', 'Converted Weight', 'Rate', 'Total Paid', 'Operator'];
 
     const rows = searchedCalculations.map(calc => {
-      const monCount = Math.floor(calc.totalKg / calc.monType);
-      const extraKg = calc.totalKg % calc.monType;
-      const dateStr = new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US');
-      const formattedConv = language === 'bn' 
-        ? `${monCount} মন ${extraKg} কেজি` 
-        : `${monCount} Mon ${extraKg} KG`;
-
-      const gateNo = calc.getEntryNo !== undefined ? calc.getEntryNo : (calc.gateEntry !== undefined ? calc.gateEntry : '---');
+      const disp = getCalculationDisplay(calc, language);
+      const safeKg = disp.grossKg !== null ? disp.grossKg : '—';
+      const safeMonType = disp.monType !== null ? disp.monType : '—';
+      const dateStr = disp.dateDisplay;
+      const formattedConv = disp.monDisplay;
+      const gateNo = disp.gateEntryDisplay || '---';
 
       return [
         dateStr,
-        `#${calc.challanNo}`,
+        disp.challanDisplay,
         gateNo,
-        calc.sellerName,
-        calc.totalKg,
-        calc.monType,
+        disp.sellerDisplay,
+        safeKg,
+        safeMonType,
         formattedConv,
-        calc.ratePerMon,
-        Math.round(calc.totalPrice),
-        calc.createdBy || 'Guest'
+        disp.ratePerMon !== null ? disp.ratePerMon : '—',
+        disp.totalPrice !== null ? Math.round(disp.totalPrice) : '—',
+        disp.operatorDisplay
       ];
     });
 
@@ -2147,27 +2182,25 @@ _এ. এস এন্টারপ্রাইজ_`;
       : (dateFilter === 'today' ? 'Today\'s' : dateFilter === 'yesterday' ? 'Yesterday\'s' : dateFilter === '7days' ? 'Last 7 Days\'' : 'Last 30 Days\'');
 
     const tableRows = searchedCalculations.map(calc => {
-      const monCount = Math.floor(calc.totalKg / calc.monType);
-      const extraKg = calc.totalKg % calc.monType;
-      const gateVal = calc.getEntryNo !== undefined ? calc.getEntryNo : (calc.gateEntry !== undefined ? calc.gateEntry : undefined);
+      const disp = getCalculationDisplay(calc, language);
       return `
         <tr style="border-bottom: 1px solid #ddd; font-size: 11px;">
-          <td style="padding: 8px;">${new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}</td>
+          <td style="padding: 8px;">${disp.dateDisplay}</td>
           <td style="padding: 8px;">
-            <div style="font-weight: bold; color: #b91c1c;">#${calc.challanNo}</div>
-            ${gateVal !== undefined ? `
+            <div style="font-weight: bold; color: #b91c1c;">${disp.challanDisplay}</div>
+            ${disp.gateEntryDisplay ? `
               <div style="font-size: 9px; color: #4f46e5; font-weight: bold; margin-top: 2px; white-space: nowrap;">
-                GE: ${gateVal}
+                ${disp.gateEntryDisplay}
               </div>
             ` : ''}
           </td>
-          <td style="padding: 8px; font-weight: bold;">${calc.sellerName}</td>
-          <td style="padding: 8px;">${calc.totalKg} KG</td>
-          <td style="padding: 8px;">${calc.monType} KG</td>
-          <td style="padding: 8px; font-weight: bold; color: #16a34a;">${monCount} মন ${extraKg} কেজি</td>
-          <td style="padding: 8px;">৳${calc.ratePerMon}</td>
-          <td style="padding: 8px; font-weight: bold;">৳${Math.round(calc.totalPrice).toLocaleString()}</td>
-          <td style="padding: 8px; font-size: 10px; color: #555;">${calc.createdBy || 'Guest'}</td>
+          <td style="padding: 8px; font-weight: bold;">${disp.sellerDisplay}</td>
+          <td style="padding: 8px;">${disp.weightDisplay}</td>
+          <td style="padding: 8px;">${disp.monType !== null ? `${disp.monType} KG` : '—'}</td>
+          <td style="padding: 8px; font-weight: bold; color: #16a34a;">${disp.monDisplay}</td>
+          <td style="padding: 8px;">${disp.rateDisplay}</td>
+          <td style="padding: 8px; font-weight: bold;">${disp.totalPriceDisplay}</td>
+          <td style="padding: 8px; font-size: 10px; color: #555;">${disp.operatorDisplay}</td>
         </tr>
       `;
     }).join('');
@@ -2348,6 +2381,8 @@ _এ. এস এন্টারপ্রাইজ_`;
               )}
               <NavButton label={t.calculator} active={activeTab === 'calculator'} onClick={() => handleTabChange('calculator')} />
               <NavButton label={t.history} active={activeTab === 'history'} onClick={() => handleTabChange('history')} />
+              <NavButton label={language === 'bn' ? 'ডুপ্লিকেট রিভিউ' : 'Duplicate Review'} active={activeTab === 'duplicateReview'} onClick={() => handleTabChange('duplicateReview')} />
+              <NavButton label={language === 'bn' ? 'ক্লিনআপ সেন্টার' : 'Cleanup Center'} active={activeTab === 'cleanupCenter'} onClick={() => handleTabChange('cleanupCenter')} />
               <NavButton label={t.note} active={activeTab === 'note'} onClick={() => handleTabChange('note')} />
               <NavButton label={language === 'bn' ? 'এআই জিজ্ঞাসা' : 'AI Assistant'} active={activeTab === 'assistant'} onClick={() => handleTabChange('assistant')} />
               <NavButton label={t.settings} active={activeTab === 'settings'} onClick={() => handleTabChange('settings')} />
@@ -2409,6 +2444,8 @@ _এ. এস এন্টারপ্রাইজ_`;
                   )}
                   <option value="calculator">{t.calculator}</option>
                   <option value="history">{t.history}</option>
+                  <option value="duplicateReview">{language === 'bn' ? '🔍 ডুপ্লিকেট অডিট রিভিউ' : '🔍 Duplicate Audit Review'}</option>
+                  <option value="cleanupCenter">{language === 'bn' ? '🛡️ ক্লিনআপ সেন্টার' : '🛡️ Cleanup Center'}</option>
                   <option value="note">{t.note}</option>
                   <option value="assistant">{language === 'bn' ? 'এআই জিজ্ঞাসা' : 'AI Assistant'}</option>
                   <option value="settings">{t.settings}</option>
@@ -2534,6 +2571,22 @@ _এ. এস এন্টারপ্রাইজ_`;
                   >
                     <Printer size={14} />
                     <span>{t.pdfPrint}</span>
+                  </button>
+                  <button
+                    onClick={() => handleTabChange('duplicateReview')}
+                    className="flex items-center gap-1.5 px-3.5 h-9 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded text-[11px] tracking-wide transition-all shadow-sm active:scale-95 cursor-pointer"
+                    title={language === 'bn' ? 'ঐতিহাসিক ডুপ্লিকেট অডিট ও রিভিউ স্ক্রিন' : 'Historical Duplicate Audit Review Screen'}
+                  >
+                    <Layers size={14} />
+                    <span>{language === 'bn' ? 'ডুপ্লিকেট অডিট' : 'Duplicate Audit'}</span>
+                  </button>
+                  <button
+                    onClick={() => handleTabChange('cleanupCenter')}
+                    className="flex items-center gap-1.5 px-3.5 h-9 bg-rose-600 hover:bg-rose-500 text-white font-black rounded text-[11px] tracking-wide transition-all shadow-sm active:scale-95 cursor-pointer"
+                    title={language === 'bn' ? 'ঐতিহাসিক ডুপ্লিকেট ক্লিনআপ সেন্টার' : 'Historical Duplicate Cleanup Center'}
+                  >
+                    <ShieldAlert size={14} />
+                    <span>{language === 'bn' ? 'ক্লিনআপ সেন্টার' : 'Cleanup Center'}</span>
                   </button>
                 </div>
               </div>
@@ -2946,6 +2999,24 @@ _এ. এস এন্টারপ্রাইজ_`;
               </div>
             </motion.div>
           )}
+          {activeTab === 'duplicateReview' && (
+            <motion.div key="duplicateReview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <HistoricalDuplicateReview
+                calculations={calculations}
+                language={language}
+                onClose={() => handleTabChange('history')}
+              />
+            </motion.div>
+          )}
+          {activeTab === 'cleanupCenter' && (
+            <motion.div key="cleanupCenter" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <HistoricalCleanupCenter
+                calculations={calculations}
+                language={language}
+                onClose={() => handleTabChange('history')}
+              />
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
 
@@ -3135,6 +3206,7 @@ function HomeSection({
   const [cashLedgerSubTab, setCashLedgerSubTab] = useState<'active' | 'trash'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
+  const [viewingCalc, setViewingCalc] = useState<Calculation | null>(null);
   const [editingLedger, setEditingLedger] = useState<any | null>(null);
   const [memoCalc, setMemoCalc] = useState<Calculation | null>(null);
   const [buyerName, setBuyerName] = useState<string>('');
@@ -3217,6 +3289,70 @@ function HomeSection({
     // Dynamic Sort: Primary (Date descending), Secondary (gateEntry descending numerically)
     return list.sort(sortCalculations);
   }, [deletedCalculations, searchQuery]);
+
+  // Helper to format Date to YYYY-MM-DD for native input
+  const formatDateToYYYYMMDD = (d: Date): string => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Helper to format display date (e.g. 01/09/2026 or ০১/০৯/২০২৬)
+  const formatDisplayDate = (dStr: string) => {
+    if (!dStr) return '';
+    try {
+      const [y, m, d] = dStr.split('-').map(Number);
+      if (isNaN(y) || isNaN(m) || isNaN(d)) return dStr;
+      if (language === 'bn') {
+        const bnDigits = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+        const pad = (n: number) => String(n).padStart(2, '0').replace(/\d/g, x => bnDigits[parseInt(x, 10)]);
+        const yBn = String(y).replace(/\d/g, x => bnDigits[parseInt(x, 10)]);
+        return `${pad(d)}/${pad(m)}/${yBn}`;
+      }
+      return `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`;
+    } catch {
+      return dStr;
+    }
+  };
+
+  // Step 1 day backward (আগের দিন)
+  const handlePreviousDay = () => {
+    let ref = new Date();
+    const targetStr = customStartDate || customEndDate;
+    if (targetStr) {
+      const [y, m, d] = targetStr.split('-').map(Number);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+        ref = new Date(y, m - 1, d);
+      }
+    }
+    ref.setDate(ref.getDate() - 1);
+    const newDateStr = formatDateToYYYYMMDD(ref);
+    setCustomStartDate(newDateStr);
+    setCustomEndDate(newDateStr);
+    if (dateFilter !== 'custom') {
+      setDateFilter('custom');
+    }
+  };
+
+  // Step 1 day forward (পরের দিন)
+  const handleNextDay = () => {
+    let ref = new Date();
+    const targetStr = customEndDate || customStartDate;
+    if (targetStr) {
+      const [y, m, d] = targetStr.split('-').map(Number);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+        ref = new Date(y, m - 1, d);
+      }
+    }
+    ref.setDate(ref.getDate() + 1);
+    const newDateStr = formatDateToYYYYMMDD(ref);
+    setCustomStartDate(newDateStr);
+    setCustomEndDate(newDateStr);
+    if (dateFilter !== 'custom') {
+      setDateFilter('custom');
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -3400,7 +3536,7 @@ function HomeSection({
 
       {/* Custom Date Range Picker Inputs */}
       {dateFilter === 'custom' && (
-        <div className="flex items-center flex-wrap gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 animate-fadeIn text-xs shadow-sm">
+        <div className="flex items-center flex-wrap gap-3 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 animate-fadeIn text-xs shadow-sm">
           <div className="flex items-center gap-2">
             <span className="font-extrabold text-slate-500 dark:text-slate-400">{language === 'bn' ? 'শুরুর তারিখ:' : 'Start Date:'}</span>
             <input 
@@ -3426,6 +3562,41 @@ function HomeSection({
             >
               {language === 'bn' ? 'মুছে ফেলুন' : 'Clear Dates'}
             </button>
+          )}
+
+          {/* Previous Day & Next Day Buttons (As requested by user in red boxes) */}
+          <div className="flex items-center gap-1.5 sm:border-l sm:border-slate-200 dark:sm:border-slate-800 sm:pl-3">
+            <button
+              onClick={handlePreviousDay}
+              type="button"
+              className="flex items-center gap-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-950 text-white rounded-lg font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer border border-slate-700"
+              title={language === 'bn' ? 'আগের দিনের হিসাব দেখুন' : 'View Previous Day'}
+            >
+              <ChevronLeft size={14} />
+              <span>{language === 'bn' ? 'আগের দিন' : 'Previous Day'}</span>
+            </button>
+            <button
+              onClick={handleNextDay}
+              type="button"
+              className="flex items-center gap-1 px-3 py-1.5 bg-yellow-400 hover:bg-yellow-500 text-slate-950 rounded-lg font-black text-xs shadow-sm transition-all active:scale-95 cursor-pointer border border-yellow-300"
+              title={language === 'bn' ? 'পরের দিনের হিসাব দেখুন' : 'View Next Day'}
+            >
+              <span>{language === 'bn' ? 'পরের দিন' : 'Next Day'}</span>
+              <ChevronRight size={14} />
+            </button>
+          </div>
+
+          {/* Active Selected Date Badge - Clearly indicates which date is viewed */}
+          {(customStartDate || customEndDate) && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/15 text-amber-900 dark:text-amber-300 border border-amber-400/40 rounded-lg text-xs font-black shadow-sm">
+              <Calendar size={13} className="text-amber-600 dark:text-amber-400 shrink-0" />
+              <span>
+                {language === 'bn' ? 'তারিখ: ' : 'Date: '}
+                <span className="font-mono underline underline-offset-2">
+                  {formatDisplayDate(customStartDate || customEndDate)}
+                </span>
+              </span>
+            </div>
           )}
         </div>
       )}
@@ -3614,11 +3785,12 @@ function HomeSection({
               <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
                 {activeSubTab === 'active' ? (
                   filteredList.map((calc) => {
-                    const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                      ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                      : calc.totalKg;
-                    const monCount = Math.floor(netKg / calc.monType);
-                    const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                    const disp = getCalculationDisplay(calc, language);
+                    const safeGrossKg = disp.grossKg || 0;
+                    const safeDeduction = disp.deductedKg;
+                    const netKg = disp.netKg !== null ? disp.netKg : safeGrossKg;
+                    const gateNo = calc.gateEntryNo !== undefined ? calc.gateEntryNo : (calc.getEntryNo !== undefined ? calc.getEntryNo : calc.gateEntry);
+
                     return (
                       <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
                         <div className="flex items-center justify-between">
@@ -3636,16 +3808,25 @@ function HomeSection({
                               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
                             />
                             <span className="text-[10px] font-black text-slate-400">
-                              📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                              📅 {disp.dateDisplay}
                             </span>
+                            {disp.isAndroid ? (
+                              <span className="font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded px-1.5 py-0.5 text-[8px] uppercase">
+                                📱 Android
+                              </span>
+                            ) : (
+                              <span className="font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded px-1.5 py-0.5 text-[8px] uppercase">
+                                💻 Web
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-1.5">
                             <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px]">
-                              #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                              {disp.challanDisplay}
                             </span>
-                            {calc.getEntryNo !== undefined && (
+                            {disp.gateEntryDisplay && (
                               <span className="font-black text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 text-[9px]">
-                                {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                                {disp.gateEntryDisplay}
                               </span>
                             )}
                           </div>
@@ -3655,8 +3836,8 @@ function HomeSection({
                           <div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
                             <div className="font-black text-slate-800 dark:text-slate-200 flex flex-wrap items-center gap-1 mt-0.5">
-                              {calc.sellerName}
-                              {calc.isMinusCalculated && (
+                              {disp.sellerDisplay}
+                              {disp.hasMinus && (
                                 <span className="inline-block text-[8px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase scale-90 origin-left">
                                   {language === 'bn' ? 'মাইনাস' : 'Minus'}
                                 </span>
@@ -3665,30 +3846,38 @@ function HomeSection({
                           </div>
                           <div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
-                            <div className="font-black text-emerald-600 text-sm mt-0.5">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
+                            <div className="font-black text-emerald-600 text-sm mt-0.5">{disp.totalPriceDisplay}</div>
                           </div>
                           <div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
                             <div className="font-bold text-slate-600 dark:text-slate-400 mt-0.5 text-xs">
-                              {calc.totalKg} KG
+                              {disp.weightDisplay}
                             </div>
                           </div>
                           <div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'রূপান্তরিত ওজন' : 'Converted Weight'}</div>
                             <div className="font-bold text-green-700 dark:text-green-400 mt-0.5 text-xs">
-                              {monCount} M {extraKg} KG
+                              {disp.monDisplay}
                             </div>
                           </div>
                         </div>
 
                         <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
-                          <span className="text-[9px] font-black uppercase text-slate-400">
-                            👤 BY: {calc.createdBy || 'Guest'}
+                          <span className="text-[9px] font-black uppercase text-slate-400 truncate max-w-[100px]" title={disp.operatorDisplay}>
+                            👤 {disp.operatorDisplay}
                           </span>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <button 
+                              onClick={() => setViewingCalc(calc)}
+                              className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 border border-indigo-200 dark:border-indigo-900/30 px-2.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
+                              title={language === 'bn' ? 'সম্পূর্ণ হিসাব বিবরণী যাচাই করুন' : 'Inspect calculation body'}
+                            >
+                              <Eye size={12} />
+                              <span>{language === 'bn' ? 'যাচাই' : 'Inspect'}</span>
+                            </button>
                             <button 
                               onClick={() => { setMemoCalc(calc); setBuyerName(''); }}
-                              className="flex items-center gap-1 bg-yellow-50 dark:bg-yellow-950/20 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-100 border border-yellow-200 dark:border-yellow-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
+                              className="flex items-center gap-1 bg-yellow-50 dark:bg-yellow-950/20 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-100 border border-yellow-200 dark:border-yellow-900/30 px-2.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
                               title={language === 'bn' ? 'মেমো তৈরি করুন' : 'Generate dispatch memo'}
                             >
                               <Printer size={12} />
@@ -3696,14 +3885,14 @@ function HomeSection({
                             </button>
                             <button 
                               onClick={() => setEditingCalc(calc)}
-                              className="flex items-center gap-1 bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 border border-blue-200 dark:border-blue-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
+                              className="flex items-center gap-1 bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 border border-blue-200 dark:border-blue-900/30 px-2.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
                             >
                               <Edit size={12} />
                               <span>{language === 'bn' ? 'সম্পাদনা' : 'Edit'}</span>
                             </button>
                             <button 
                               onClick={() => onDelete(calc.id)} 
-                              className="flex items-center gap-1 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 hover:bg-red-100 border border-red-200 dark:border-red-900/30 px-3.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
+                              className="flex items-center gap-1 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 hover:bg-red-100 border border-red-200 dark:border-red-900/30 px-2.5 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
                             >
                               <Trash2 size={12} />
                               <span>{language === 'bn' ? 'মুছুন' : 'Delete'}</span>
@@ -3715,11 +3904,7 @@ function HomeSection({
                   })
                 ) : (
                   filteredDeletedList.map((calc) => {
-                    const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                      ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                      : calc.totalKg;
-                    const monCount = Math.floor(netKg / calc.monType);
-                    const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                    const disp = getCalculationDisplay(calc, language);
                     return (
                       <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 bg-rose-50/10 dark:bg-rose-950/5">
                         <div className="flex items-center justify-between">
@@ -3737,26 +3922,31 @@ function HomeSection({
                               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-950 cursor-pointer"
                             />
                             <span className="text-[10px] font-black text-slate-400">
-                              📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                              📅 {disp.dateDisplay}
                             </span>
+                            {disp.isAndroid && (
+                              <span className="font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded px-1.5 py-0.5 text-[8px] uppercase">
+                                📱 Android
+                              </span>
+                            )}
                           </div>
                           <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded px-1.5 py-0.5 text-[10px] line-through">
-                            #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                            {disp.challanDisplay}
                           </span>
                         </div>
                         
                         <div className="grid grid-cols-2 gap-3 bg-slate-50/50 dark:bg-slate-950/20 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800/50">
                           <div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
-                            <div className="font-black text-slate-400 line-through mt-0.5">{calc.sellerName}</div>
+                            <div className="font-black text-slate-400 line-through mt-0.5">{disp.sellerDisplay}</div>
                           </div>
                           <div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
-                            <div className="font-black text-slate-400 line-through mt-0.5 text-sm">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
+                            <div className="font-black text-slate-400 line-through mt-0.5 text-sm">{disp.totalPriceDisplay}</div>
                           </div>
                           <div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
-                            <div className="font-bold text-slate-400 line-through mt-0.5 text-xs">{calc.totalKg} KG</div>
+                            <div className="font-bold text-slate-400 line-through mt-0.5 text-xs">{disp.weightDisplay}</div>
                           </div>
                           <div>
                             <div className="text-[9px] text-rose-500 font-black uppercase tracking-wider">{language === 'bn' ? 'ডিলেট করেছেন' : 'Deleted By'}</div>
@@ -3820,11 +4010,12 @@ function HomeSection({
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {activeSubTab === 'active' ? (
                       filteredList.map((calc) => {
-                        const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                          ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                          : calc.totalKg;
-                        const monCount = Math.floor(netKg / calc.monType);
-                        const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                        const disp = getCalculationDisplay(calc, language);
+                        const safeGrossKg = disp.grossKg || 0;
+                        const safeDeduction = disp.deductedKg;
+                        const netKg = disp.netKg !== null ? disp.netKg : safeGrossKg;
+                        const gateNo = calc.gateEntryNo !== undefined ? calc.gateEntryNo : (calc.getEntryNo !== undefined ? calc.getEntryNo : calc.gateEntry);
+
                         return (
                           <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
                             <td className="px-4 py-3">
@@ -3842,58 +4033,74 @@ function HomeSection({
                               />
                             </td>
                             <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
-                              {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                              <div>{disp.dateDisplay}</div>
+                              {disp.isAndroid ? (
+                                <span className="font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded px-1 py-0.5 text-[8px] uppercase inline-block mt-0.5">
+                                  📱 Android
+                                </span>
+                              ) : (
+                                <span className="font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded px-1 py-0.5 text-[8px] uppercase inline-block mt-0.5">
+                                  💻 Web
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
-                              <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
-                              {calc.getEntryNo !== undefined && (
+                              <div>{disp.challanDisplay}</div>
+                              {disp.gateEntryDisplay && (
                                 <div className="text-[9px] text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 inline-block font-black mt-1">
-                                  {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                                  {disp.gateEntryDisplay}
                                 </div>
                               )}
                             </td>
                             <td className="px-3 py-3 font-black">
-                              {calc.sellerName}
-                              {calc.isMinusCalculated && (
+                              {disp.sellerDisplay}
+                              {disp.hasMinus && (
                                 <span className="ml-1.5 inline-block text-[9px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase">
                                   {language === 'bn' ? 'মাইনাস' : 'Minus'}
                                 </span>
                               )}
                             </td>
                             <td className="px-3 py-3 font-bold whitespace-nowrap">
-                              <div>{calc.totalKg} KG</div>
-                              {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
+                              <div>{disp.weightDisplay}</div>
+                              {disp.hasMinus && safeDeduction > 0 && (
                                 <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1.5 rounded mt-1 text-slate-500 dark:text-slate-450 font-semibold space-y-0.5 min-w-[130px]">
-                                  <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
-                                  <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
-                                  <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
+                                  <div>{language === 'bn' ? `মোট: ${toBengaliDigits(safeGrossKg)} কেজি` : `Total: ${safeGrossKg} KG`}</div>
+                                  <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits(netKg.toFixed(1))} কেজি` : `Net Wt: ${netKg.toFixed(1)} KG`}</div>
+                                  <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(safeDeduction.toFixed(1))} কেজি` : `Difference: ${safeDeduction.toFixed(1)} KG`}</div>
                                 </div>
                               )}
                             </td>
                             <td className="px-3 py-3 font-bold text-green-700 dark:text-green-400 whitespace-nowrap">
-                              <div>{monCount} M {extraKg} KG</div>
-                              {calc.isMinusCalculated && (
+                              <div>{disp.monDisplay}</div>
+                              {disp.hasMinus && (
                                 <div className="text-[9px] text-slate-455 font-bold">
                                   {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
                                 </div>
                               )}
                             </td>
                             <td className="px-3 py-3 text-slate-500 font-bold whitespace-nowrap">
-                              <div>৳{calc.ratePerMon}</div>
+                              <div>{disp.rateDisplay}</div>
                               {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
                                 <div className="text-[9px] text-emerald-600 font-extrabold">
                                   Target: ৳{calc.targetMonPrice}
                                 </div>
                               )}
                             </td>
-                            <td className="px-4 py-3 font-black text-slate-900 dark:text-white">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
+                            <td className="px-4 py-3 font-black text-slate-900 dark:text-white">{disp.totalPriceDisplay}</td>
                             <td className="px-3 py-3 whitespace-nowrap">
-                              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                                {calc.createdBy || 'Guest'}
+                              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 truncate max-w-[110px] inline-block" title={disp.operatorDisplay}>
+                                {disp.operatorDisplay}
                               </span>
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-1.5">
+                                <button 
+                                  onClick={() => setViewingCalc(calc)}
+                                  className="text-slate-400 hover:text-indigo-600 p-1.5 rounded hover:bg-slate-100/80 dark:hover:bg-slate-800 transition-all cursor-pointer"
+                                  title={language === 'bn' ? 'সম্পূর্ণ হিসাব বিবরণী যাচাই করুন' : 'Inspect calculation body'}
+                                >
+                                  <Eye size={13} />
+                                </button>
                                 <button 
                                   onClick={() => { setMemoCalc(calc); setBuyerName(''); }}
                                   className="text-slate-400 hover:text-yellow-600 p-1.5 rounded hover:bg-slate-100/80 dark:hover:bg-slate-800 transition-all cursor-pointer"
@@ -3922,11 +4129,7 @@ function HomeSection({
                       })
                     ) : (
                       filteredDeletedList.map((calc) => {
-                        const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                          ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                          : calc.totalKg;
-                        const monCount = Math.floor(netKg / calc.monType);
-                        const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                        const disp = getCalculationDisplay(calc, language);
                         return (
                           <tr key={calc.id} className="text-[11px] hover:bg-slate-50/50 dark:hover:bg-slate-800/30 text-slate-800 dark:text-slate-200">
                             <td className="px-4 py-3">
@@ -3944,34 +4147,39 @@ function HomeSection({
                               />
                             </td>
                             <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
-                              {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                              <div>{disp.dateDisplay}</div>
+                              {disp.isAndroid && (
+                                <span className="text-[8px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1 py-0.5 rounded font-bold uppercase tracking-wider inline-block mt-0.5">
+                                  Android
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
-                              <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
-                              {calc.getEntryNo !== undefined && (
+                              <div>{disp.challanDisplay}</div>
+                              {disp.gateEntryDisplay && (
                                 <div className="text-[9px] text-indigo-600 dark:text-indigo-450 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded px-1.5 py-0.5 inline-block font-black mt-1">
-                                  {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                                  {disp.gateEntryDisplay}
                                 </div>
                               )}
                             </td>
                             <td className="px-3 py-3 font-black text-slate-450 line-through">
-                              {calc.sellerName}
-                              {calc.isMinusCalculated && (
+                              {disp.sellerDisplay}
+                              {disp.hasMinus && (
                                 <span className="ml-1.5 inline-block text-[9px] bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 rounded px-1 font-extrabold uppercase">
                                   {language === 'bn' ? 'মাইনাস' : 'Minus'}
                                 </span>
                               )}
                             </td>
                             <td className="px-3 py-3 font-bold whitespace-nowrap text-slate-450 line-through">
-                              <div>{calc.totalKg} KG</div>
+                              <div>{disp.weightDisplay}</div>
                             </td>
                             <td className="px-3 py-3 font-bold text-slate-455 whitespace-nowrap line-through">
-                              <div>{monCount} M {extraKg} KG</div>
+                              <div>{disp.monDisplay}</div>
                             </td>
                             <td className="px-3 py-3 text-slate-450 font-bold whitespace-nowrap line-through">
-                              <div>৳{calc.ratePerMon}</div>
+                              <div>{disp.rateDisplay}</div>
                             </td>
-                            <td className="px-4 py-3 font-black text-slate-400 line-through">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
+                            <td className="px-4 py-3 font-black text-slate-400 line-through">{disp.totalPriceDisplay}</td>
                             <td className="px-3 py-3 whitespace-nowrap">
                               <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40">
                                 🗑️ {calc.deletedBy || calc.createdBy || 'Unknown'}
@@ -4890,8 +5098,11 @@ function HomeSection({
                   </label>
                   <input 
                     type="number" 
-                    value={editingCalc.getEntryNo !== undefined ? editingCalc.getEntryNo : ''}
-                    onChange={e => setEditingCalc({ ...editingCalc, getEntryNo: parseInt(e.target.value) || 0 })}
+                    value={editingCalc.getEntryNo !== undefined ? editingCalc.getEntryNo : (editingCalc.gateEntryNo !== undefined ? editingCalc.gateEntryNo : '')}
+                    onChange={e => {
+                      const val = parseInt(e.target.value) || 0;
+                      setEditingCalc({ ...editingCalc, getEntryNo: val, gateEntryNo: val, gateEntry: val });
+                    }}
                     className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
                   />
                 </div>
@@ -4916,8 +5127,11 @@ function HomeSection({
                   </label>
                   <input 
                     type="number" 
-                    value={editingCalc.totalKg}
-                    onChange={e => setEditingCalc({ ...editingCalc, totalKg: parseFloat(e.target.value) || 0 })}
+                    value={editingCalc.totalKg !== undefined ? editingCalc.totalKg : ((editingCalc as any).weightKg || '')}
+                    onChange={e => {
+                      const val = parseFloat(e.target.value) || 0;
+                      setEditingCalc({ ...editingCalc, totalKg: val, weightKg: val });
+                    }}
                     className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
                   />
                 </div>
@@ -4927,8 +5141,11 @@ function HomeSection({
                   </label>
                   <input 
                     type="number" 
-                    value={editingCalc.ratePerMon}
-                    onChange={e => setEditingCalc({ ...editingCalc, ratePerMon: parseFloat(e.target.value) || 0 })}
+                    value={editingCalc.ratePerMon !== undefined ? editingCalc.ratePerMon : ((editingCalc as any).rate || '')}
+                    onChange={e => {
+                      const val = parseFloat(e.target.value) || 0;
+                      setEditingCalc({ ...editingCalc, ratePerMon: val, rate: val });
+                    }}
                     className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 text-slate-900 dark:text-white"
                   />
                 </div>
@@ -4939,7 +5156,7 @@ function HomeSection({
                   {language === 'bn' ? 'মন সাইজ' : 'Mon System'}
                 </label>
                 <select 
-                  value={editingCalc.monType}
+                  value={editingCalc.monType || 41}
                   onChange={e => setEditingCalc({ ...editingCalc, monType: parseInt(e.target.value) as MonType })}
                   className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400 cursor-pointer text-slate-900 dark:text-white"
                 >
@@ -4959,7 +5176,9 @@ function HomeSection({
                   <input 
                     type="date" 
                     value={(() => {
-                      const d = new Date(editingCalc.timestamp);
+                      const ts = editingCalc.timestamp || Date.now();
+                      const d = new Date(ts);
+                      if (isNaN(d.getTime())) return new Date().toISOString().substring(0, 10);
                       return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
                     })()}
                     onChange={e => {
@@ -5071,11 +5290,15 @@ function HomeSection({
                     return;
                   }
 
-                  const mType = editingCalc.monType || 40;
-                  const kg = editingCalc.totalKg || 0;
-                  const rate = editingCalc.ratePerMon || 0;
+                  const mType = (editingCalc.monType && editingCalc.monType > 0) ? editingCalc.monType : 41;
+                  const kg = typeof editingCalc.totalKg === 'number' && !isNaN(editingCalc.totalKg)
+                    ? editingCalc.totalKg
+                    : (typeof (editingCalc as any).weightKg === 'number' ? (editingCalc as any).weightKg : 0);
+                  const rate = typeof editingCalc.ratePerMon === 'number' && !isNaN(editingCalc.ratePerMon)
+                    ? editingCalc.ratePerMon
+                    : (typeof (editingCalc as any).rate === 'number' ? (editingCalc as any).rate : 0);
                   
-                  let totalMon = kg / mType;
+                  let totalMon = mType > 0 ? kg / mType : 0;
                   let totalPrice = totalMon * rate;
 
                   if (editingCalc.isMinusCalculated) {
@@ -5089,7 +5312,7 @@ function HomeSection({
                         const ratio = targetMonPrice / rate;
                         netWeight = kg * ratio;
                         deductedWeight = Math.max(0, kg - netWeight);
-                        deductionPercentage = (deductedWeight / kg) * 100;
+                        deductionPercentage = kg > 0 ? (deductedWeight / kg) * 100 : 0;
                       }
                     } else {
                       netWeight = Math.max(0, kg - deductedWeight);
@@ -5098,21 +5321,33 @@ function HomeSection({
                       }
                     }
 
-                    totalMon = netWeight / mType;
+                    totalMon = mType > 0 ? netWeight / mType : 0;
                     totalPrice = totalMon * rate;
 
                     onEdit({
                       ...editingCalc,
+                      totalKg: kg,
+                      weightKg: kg,
+                      ratePerMon: rate,
+                      rate: rate,
+                      monType: mType as MonType,
                       totalMon,
                       totalPrice,
+                      totalAmount: totalPrice,
                       deductedWeight,
                       deductionPercentage
                     });
                   } else {
                     onEdit({
                       ...editingCalc,
+                      totalKg: kg,
+                      weightKg: kg,
+                      ratePerMon: rate,
+                      rate: rate,
+                      monType: mType as MonType,
                       totalMon,
-                      totalPrice
+                      totalPrice,
+                      totalAmount: totalPrice
                     });
                   }
                   setEditingCalc(null);
@@ -5287,70 +5522,81 @@ function HomeSection({
               </div>
 
               {/* Line items table */}
-              <div className="py-5">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-slate-900 text-[10px] font-black uppercase text-slate-500">
-                      <th className="py-2">{language === 'bn' ? 'বিবরণ' : 'Description'}</th>
-                      <th className="py-2 text-right">{language === 'bn' ? 'ওজন (কেজি)' : 'Weight (KG)'}</th>
-                      <th className="py-2 text-right">{language === 'bn' ? 'মন ধরণ' : 'Mon Size'}</th>
-                      <th className="py-2 text-right">{language === 'bn' ? 'রূপান্তরিত মন' : 'Qty (Mon)'}</th>
-                      <th className="py-2 text-right">{language === 'bn' ? 'দর প্রতি মন' : 'Rate (BDT)'}</th>
-                      <th className="py-2 text-right">{language === 'bn' ? 'সর্বমোট মূল্য' : 'Amount'}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs text-slate-800 font-medium">
-                    <tr className="py-3">
-                      <td className="py-3">
-                        <p className="font-black text-slate-950">{language === 'bn' ? 'ফায়ারউড (জ্বালানি কাঠ) ডিসপ্যাচ' : 'Firewood Cargo Dispatch Log'}</p>
-                        <p className="text-[9px] text-slate-400 font-semibold mt-0.5">{language === 'bn' ? 'ফ্যাক্টরি বয়লার ফার্নেস গ্রেড' : 'Industrial Boiler Furnace Grade'}</p>
-                      </td>
-                      <td className="py-3 text-right font-bold">{memoCalc.totalKg.toLocaleString()} KG</td>
-                      <td className="py-3 text-right">{memoCalc.monType} KG</td>
-                      <td className="py-3 text-right font-black text-slate-950">
-                        {Math.floor((memoCalc.isMinusCalculated && memoCalc.deductedWeight !== undefined ? Math.max(0, memoCalc.totalKg - memoCalc.deductedWeight) : memoCalc.totalKg) / memoCalc.monType)} Mon {(parseFloat(((memoCalc.isMinusCalculated && memoCalc.deductedWeight !== undefined ? Math.max(0, memoCalc.totalKg - memoCalc.deductedWeight) : memoCalc.totalKg) % memoCalc.monType).toFixed(2)))} KG
-                      </td>
-                      <td className="py-3 text-right font-bold">৳{memoCalc.ratePerMon}</td>
-                      <td className="py-3 text-right font-black text-slate-950 text-sm">৳{Math.round(memoCalc.totalPrice).toLocaleString()}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              {(() => {
+                const disp = getCalculationDisplay(memoCalc, language);
+                const memoGrossKg = disp.grossKg !== null ? disp.grossKg : 0;
+                const memoDeduction = disp.deductedKg;
+                const memoNetKg = disp.netKg !== null ? disp.netKg : memoGrossKg;
 
-              {/* Extra Minus Info breakdown if exists */}
-              {memoCalc.isMinusCalculated && memoCalc.deductedWeight !== undefined && (
-                <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg text-[10px] text-slate-600 mb-5 font-semibold space-y-1">
-                  <div className="font-black text-slate-950 uppercase tracking-wider text-[8px] mb-1">{language === 'bn' ? 'মাইনাস ওজন হিসাব বিবরণী:' : 'MINUS DEDUCTION STATEMENT:'}</div>
-                  <p>{language === 'bn' ? `মূল ক্রয় ওজন: ${memoCalc.totalKg.toLocaleString()} কেজি` : `Gross Purchased Weight: ${memoCalc.totalKg.toLocaleString()} KG`}</p>
-                  <p>{language === 'bn' ? `কর্তনকৃত ওজন (ধূলি/আর্দ্রতা): ${memoCalc.deductedWeight.toFixed(1)} কেজি` : `Deducted Weight (Dust/Moisture): ${memoCalc.deductedWeight.toFixed(1)} KG`}</p>
-                  <p className="text-rose-600 font-bold">{language === 'bn' ? `নিট বিলিং ওজন: ${(memoCalc.totalKg - memoCalc.deductedWeight).toFixed(1)} কেজি` : `Net Billing Weight: ${(memoCalc.totalKg - memoCalc.deductedWeight).toFixed(1)} KG`}</p>
-                </div>
-              )}
+                return (
+                  <>
+                    <div className="py-5">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-900 text-[10px] font-black uppercase text-slate-500">
+                            <th className="py-2">{language === 'bn' ? 'বিবরণ' : 'Description'}</th>
+                            <th className="py-2 text-right">{language === 'bn' ? 'ওজন (কেজি)' : 'Weight (KG)'}</th>
+                            <th className="py-2 text-right">{language === 'bn' ? 'মন ধরণ' : 'Mon Size'}</th>
+                            <th className="py-2 text-right">{language === 'bn' ? 'রূপান্তরিত মন' : 'Qty (Mon)'}</th>
+                            <th className="py-2 text-right">{language === 'bn' ? 'দর প্রতি মন' : 'Rate (BDT)'}</th>
+                            <th className="py-2 text-right">{language === 'bn' ? 'সর্বমোট মূল্য' : 'Amount'}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-xs text-slate-800 font-medium">
+                          <tr className="py-3">
+                            <td className="py-3">
+                              <p className="font-black text-slate-950">{language === 'bn' ? 'ফায়ারউড (জ্বালানি কাঠ) ডিসপ্যাচ' : 'Firewood Cargo Dispatch Log'}</p>
+                              <p className="text-[9px] text-slate-400 font-semibold mt-0.5">{language === 'bn' ? 'ফ্যাক্টরি বয়লার ফার্নেস গ্রেড' : 'Industrial Boiler Furnace Grade'}</p>
+                            </td>
+                            <td className="py-3 text-right font-bold">{disp.weightDisplay}</td>
+                            <td className="py-3 text-right">{disp.monType !== null ? `${disp.monType} KG` : '—'}</td>
+                            <td className="py-3 text-right font-black text-slate-950">
+                              {disp.monDisplay}
+                            </td>
+                            <td className="py-3 text-right font-bold">{disp.rateDisplay}</td>
+                            <td className="py-3 text-right font-black text-slate-950 text-sm">{disp.totalPriceDisplay}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
 
-              {/* Summary blocks */}
-              <div className="flex justify-between items-start py-6 border-t-2 border-slate-900 mt-4">
-                <div className="max-w-xs">
-                  <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{language === 'bn' ? 'কথায় সর্বমোট বিল:' : 'IN WORDS (BDT):'}</p>
-                  <p className="text-[11px] font-black text-slate-800 capitalize mt-1">
-                    {language === 'bn' ? 'হিসাবকৃত সর্বমোট টাকা পরিশোধযোগ্য' : 'Only total calculated payable amount'}
-                  </p>
-                </div>
-                
-                <div className="w-80 space-y-2 text-right">
-                  <div className="flex justify-between items-center text-slate-600 gap-4">
-                    <span className="font-bold whitespace-nowrap">{language === 'bn' ? 'উপ-মোট:' : 'Subtotal:'}</span>
-                    <span className="font-bold whitespace-nowrap">৳{Math.round(memoCalc.totalPrice).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-slate-600 gap-4">
-                    <span className="font-bold whitespace-nowrap">{language === 'bn' ? 'ভ্যাট/ট্যাক্স (০%):' : 'VAT / Tax (0%):'}</span>
-                    <span className="font-bold whitespace-nowrap">৳০</span>
-                  </div>
-                  <div className="flex justify-between items-center border-t border-slate-200 pt-2 text-slate-950 text-base font-black gap-4">
-                    <span className="whitespace-nowrap">{language === 'bn' ? 'সর্বমোট প্রদেয়:' : 'Total Payable:'}</span>
-                    <span className="text-indigo-600 whitespace-nowrap">৳{Math.round(memoCalc.totalPrice).toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
+                    {/* Extra Minus Info breakdown if exists */}
+                    {disp.hasMinus && memoDeduction > 0 && (
+                      <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg text-[10px] text-slate-600 mb-5 font-semibold space-y-1">
+                        <div className="font-black text-slate-950 uppercase tracking-wider text-[8px] mb-1">{language === 'bn' ? 'মাইনাস ওজন হিসাব বিবরণী:' : 'MINUS DEDUCTION STATEMENT:'}</div>
+                        <p>{language === 'bn' ? `মূল ক্রয় ওজন: ${memoGrossKg.toLocaleString()} কেজি` : `Gross Purchased Weight: ${memoGrossKg.toLocaleString()} KG`}</p>
+                        <p>{language === 'bn' ? `কর্তনকৃত ওজন (ধূলি/আর্দ্রতা): ${memoDeduction.toFixed(1)} কেজি` : `Deducted Weight (Dust/Moisture): ${memoDeduction.toFixed(1)} KG`}</p>
+                        <p className="text-rose-600 font-bold">{language === 'bn' ? `নিট বিলিং ওজন: ${memoNetKg.toFixed(1)} কেজি` : `Net Billing Weight: ${memoNetKg.toFixed(1)} KG`}</p>
+                      </div>
+                    )}
+
+                    {/* Summary blocks */}
+                    <div className="flex justify-between items-start py-6 border-t-2 border-slate-900 mt-4">
+                      <div className="max-w-xs">
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{language === 'bn' ? 'কথায় সর্বমোট বিল:' : 'IN WORDS (BDT):'}</p>
+                        <p className="text-[11px] font-black text-slate-800 capitalize mt-1">
+                          {language === 'bn' ? 'হিসাবকৃত সর্বমোট টাকা পরিশোধযোগ্য' : 'Only total calculated payable amount'}
+                        </p>
+                      </div>
+                      
+                      <div className="w-80 space-y-2 text-right">
+                        <div className="flex justify-between items-center text-slate-600 gap-4">
+                          <span className="font-bold whitespace-nowrap">{language === 'bn' ? 'উপ-মোট:' : 'Subtotal:'}</span>
+                          <span className="font-bold whitespace-nowrap">{disp.totalPriceDisplay}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-slate-600 gap-4">
+                          <span className="font-bold whitespace-nowrap">{language === 'bn' ? 'ভ্যাট/ট্যাক্স (০%):' : 'VAT / Tax (0%):'}</span>
+                          <span className="font-bold whitespace-nowrap">৳০</span>
+                        </div>
+                        <div className="flex justify-between items-center border-t border-slate-200 pt-2 text-slate-950 text-base font-black gap-4">
+                          <span className="whitespace-nowrap">{language === 'bn' ? 'সর্বমোট প্রদেয়:' : 'Total Payable:'}</span>
+                          <span className="text-indigo-600 whitespace-nowrap">{disp.totalPriceDisplay}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Signatures block */}
               <div className="grid grid-cols-2 gap-8 pt-16 mt-8 border-t border-slate-100">
@@ -5466,6 +5712,18 @@ function HomeSection({
             )}
           </div>
         </div>
+      )}
+
+      {/* Calculation Body Inspection & Audit Verification Modal */}
+      {viewingCalc && (
+        <CalculationInspectionModal
+          calc={viewingCalc}
+          onClose={() => setViewingCalc(null)}
+          onEdit={setEditingCalc}
+          onOpenMemo={(c) => { setMemoCalc(c); setBuyerName(''); }}
+          language={language}
+          toBengaliDigits={toBengaliDigits}
+        />
       )}
     </div>
   );
@@ -7366,6 +7624,7 @@ function HistorySection({
 }: HistorySectionProps) {
   const [operatorFilter, setOperatorFilter] = useState<string>('ALL');
   const [editingCalc, setEditingCalc] = useState<Calculation | null>(null);
+  const [viewingCalc, setViewingCalc] = useState<Calculation | null>(null);
 
   // Compute list of unique operators that have stored calculations
   const operators = useMemo(() => {
@@ -7449,24 +7708,36 @@ function HistorySection({
           {/* Mobile Card List View (Visible only on small screens) */}
           <div className="block md:hidden divide-y divide-slate-100 bg-white">
             {filteredList.map((calc) => {
-              const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                : calc.totalKg;
-              const monCount = Math.floor(netKg / calc.monType);
-              const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+              const disp = getCalculationDisplay(calc, language);
+              const safeGrossKg = disp.grossKg || 0;
+              const safeDeduction = disp.deductedKg;
+              const netKg = disp.netKg !== null ? disp.netKg : safeGrossKg;
+              const safeMonType = disp.monType || 41;
+
               return (
                 <div key={calc.id} className="p-4 space-y-3 hover:bg-slate-50/50">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-black text-slate-400">
-                      📅 {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black text-slate-400">
+                        📅 {disp.dateDisplay}
+                      </span>
+                      {disp.isAndroid ? (
+                        <span className="font-black text-emerald-600 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 text-[8px] uppercase">
+                          📱 Android
+                        </span>
+                      ) : (
+                        <span className="font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 text-[8px] uppercase">
+                          💻 Web
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1.5">
                       <span className="font-black text-rose-500 bg-rose-50 border border-rose-100 rounded px-1.5 py-0.5 text-[10px]">
-                        #{calc.challanNo !== undefined ? calc.challanNo : '---'}
+                        {disp.challanDisplay}
                       </span>
-                      {calc.getEntryNo !== undefined && (
+                      {disp.gateEntryDisplay && (
                         <span className="font-black text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-0.5 text-[9px]">
-                          {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                          {disp.gateEntryDisplay}
                         </span>
                       )}
                     </div>
@@ -7476,8 +7747,8 @@ function HistorySection({
                     <div>
                       <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'বিক্রেতার নাম' : 'Seller Name'}</div>
                       <div className="font-black text-slate-800 flex flex-wrap items-center gap-1 mt-0.5">
-                        {calc.sellerName}
-                        {calc.isMinusCalculated && (
+                        {disp.sellerDisplay}
+                        {disp.hasMinus && (
                           <span className="inline-block text-[8px] bg-rose-50 text-rose-600 border border-rose-100 rounded px-1 font-extrabold uppercase scale-90 origin-left">
                             {language === 'bn' ? 'মাইনাস' : 'Minus'}
                           </span>
@@ -7486,17 +7757,17 @@ function HistorySection({
                     </div>
                     <div>
                       <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট মূল্য' : 'Total Price'}</div>
-                      <div className="font-black text-emerald-600 text-sm mt-0.5">৳{Math.round(calc.totalPrice).toLocaleString()}</div>
+                      <div className="font-black text-emerald-600 text-sm mt-0.5">{disp.totalPriceDisplay}</div>
                     </div>
                     <div>
                       <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'মোট ওজন' : 'Total Weight'}</div>
                       <div className="font-bold text-slate-600 mt-0.5 text-xs">
-                        {calc.totalKg} KG
-                        {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
+                        {disp.weightDisplay}
+                        {disp.hasMinus && safeDeduction > 0 && (
                           <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1 rounded mt-1 text-slate-500 dark:text-slate-400 font-semibold space-y-0.5">
-                            <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
-                            <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
-                            <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
+                            <div>{language === 'bn' ? `মোট: ${toBengaliDigits(safeGrossKg)} কেজি` : `Total: ${safeGrossKg} KG`}</div>
+                            <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits(netKg.toFixed(1))} কেজি` : `Net Wt: ${netKg.toFixed(1)} KG`}</div>
+                            <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(safeDeduction.toFixed(1))} কেজি` : `Difference: ${safeDeduction.toFixed(1)} KG`}</div>
                           </div>
                         )}
                       </div>
@@ -7504,8 +7775,8 @@ function HistorySection({
                     <div>
                       <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'রূপান্তরিত ওজন' : 'Converted Weight'}</div>
                       <div className="font-bold text-green-700 mt-0.5 text-xs">
-                        {monCount} M {extraKg} KG
-                        {calc.isMinusCalculated && (
+                        {disp.monDisplay}
+                        {disp.hasMinus && (
                           <div className="text-[9px] text-slate-400 font-medium">
                             {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
                           </div>
@@ -7515,7 +7786,7 @@ function HistorySection({
                     <div>
                       <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{language === 'bn' ? 'দর প্রতি মণ' : 'Rate / Mon'}</div>
                       <div className="font-bold text-slate-600 mt-0.5 text-xs">
-                        ৳{calc.ratePerMon}
+                        {disp.rateDisplay}
                         {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
                           <div className="text-[9px] text-emerald-600 font-extrabold">
                             Target: ৳{calc.targetMonPrice}
@@ -7525,25 +7796,33 @@ function HistorySection({
                     </div>
                     <div>
                       <div className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">User / মন সাইজ</div>
-                      <div className="font-bold text-slate-500 mt-0.5 text-[10px]">
-                        {calc.monType} KG | {calc.createdBy || 'Guest'}
+                      <div className="font-bold text-slate-500 mt-0.5 text-[10px] truncate max-w-[120px]" title={disp.operatorDisplay}>
+                        {safeMonType} KG | {disp.operatorDisplay}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                     <button 
-                      onClick={() => setEditingCalc(calc)}
-                      className="flex items-center gap-1 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 px-3.5 py-2 rounded-lg font-black text-xs transition-all active:scale-95"
+                      onClick={() => setViewingCalc(calc)}
+                      className="flex items-center gap-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200 px-3 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
+                      title={language === 'bn' ? 'সম্পূর্ণ হিসাব যাচাই করুন' : 'Inspect calculation body'}
                     >
-                      <Edit size={13} />
+                      <Eye size={12} />
+                      <span>{language === 'bn' ? 'যাচাই' : 'Inspect'}</span>
+                    </button>
+                    <button 
+                      onClick={() => setEditingCalc(calc)}
+                      className="flex items-center gap-1 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 px-3 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
+                    >
+                      <Edit size={12} />
                       <span>{language === 'bn' ? 'সংশোধন' : 'Edit'}</span>
                     </button>
                     <button 
                       onClick={() => onDelete(calc.id)} 
-                      className="flex items-center gap-1 bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 px-3.5 py-2 rounded-lg font-black text-xs transition-all active:scale-95"
+                      className="flex items-center gap-1 bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 px-3 py-1.5 rounded-lg font-black text-xs transition-all active:scale-95 cursor-pointer"
                     >
-                      <Trash2 size={13} />
+                      <Trash2 size={12} />
                       <span>{language === 'bn' ? 'মুছে ফেলুন' : 'Delete'}</span>
                     </button>
                   </div>
@@ -7570,76 +7849,89 @@ function HistorySection({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredList.map((calc) => {
-                  const netKg = calc.isMinusCalculated && calc.deductedWeight !== undefined 
-                    ? Math.max(0, calc.totalKg - calc.deductedWeight) 
-                    : calc.totalKg;
-                  const monCount = Math.floor(netKg / calc.monType);
-                  const extraKg = parseFloat((netKg % calc.monType).toFixed(2));
+                  const disp = getCalculationDisplay(calc, language);
+                  const safeGrossKg = disp.grossKg || 0;
+                  const safeDeduction = disp.deductedKg;
+                  const netKg = disp.netKg !== null ? disp.netKg : safeGrossKg;
                   return (
                     <tr key={calc.id} className="text-[11px] hover:bg-slate-50/70">
                       <td className="px-4 py-3 font-bold text-slate-400 whitespace-nowrap">
-                        {new Date(calc.timestamp).toLocaleDateString(language === 'bn' ? 'bn-BD' : 'en-US')}
+                        {disp.dateDisplay}
                       </td>
                       <td className="px-4 py-3 font-black text-rose-500 whitespace-nowrap">
-                        <div>#{calc.challanNo !== undefined ? calc.challanNo : '---'}</div>
-                        {calc.getEntryNo !== undefined && (
+                        <div className="flex items-center gap-1.5">
+                          <span>{disp.challanDisplay}</span>
+                          {disp.isAndroid && (
+                            <span className="text-[8px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1 py-0.5 rounded font-bold uppercase tracking-wider">
+                              Android
+                            </span>
+                          )}
+                        </div>
+                        {disp.gateEntryDisplay && (
                           <div className="text-[9px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-0.5 inline-block font-black mt-1">
-                            {language === 'bn' ? `গেট এন্ট্রি ${toBengaliDigits(calc.getEntryNo)}` : `Get Entry ${calc.getEntryNo}`}
+                            {disp.gateEntryDisplay}
                           </div>
                         )}
                       </td>
                       <td className="px-3 py-3 font-black text-slate-800">
-                        {calc.sellerName}
-                        {calc.isMinusCalculated && (
+                        {disp.sellerDisplay}
+                        {disp.hasMinus && (
                           <span className="ml-1.5 inline-block text-[9px] bg-rose-50 text-rose-600 border border-rose-100 rounded px-1 font-extrabold uppercase">
                             {language === 'bn' ? 'মাইনাস' : 'Minus'}
                           </span>
                         )}
                       </td>
                       <td className="px-3 py-3 text-slate-600 font-bold whitespace-nowrap">
-                        <div>{calc.totalKg} KG</div>
-                        {calc.isMinusCalculated && calc.deductedWeight !== undefined && (
+                        <div>{disp.weightDisplay}</div>
+                        {disp.hasMinus && safeDeduction > 0 && (
                           <div className="text-[9px] bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 p-1.5 rounded mt-1 text-slate-500 dark:text-slate-400 font-semibold space-y-0.5 min-w-[130px]">
-                            <div>{language === 'bn' ? `মোট: ${toBengaliDigits(calc.totalKg)} কেজি` : `Total: ${calc.totalKg} KG`}</div>
-                            <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits((calc.totalKg - calc.deductedWeight).toFixed(1))} কেজি` : `Net Wt: ${(calc.totalKg - calc.deductedWeight).toFixed(1)} KG`}</div>
-                            <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(calc.deductedWeight.toFixed(1))} কেজি` : `Difference: ${calc.deductedWeight.toFixed(1)} KG`}</div>
+                            <div>{language === 'bn' ? `মোট: ${toBengaliDigits(safeGrossKg)} কেজি` : `Total: ${safeGrossKg} KG`}</div>
+                            <div>{language === 'bn' ? `নিট ওজন: ${toBengaliDigits(netKg.toFixed(1))} কেজি` : `Net Wt: ${netKg.toFixed(1)} KG`}</div>
+                            <div className="text-red-600 dark:text-red-400 font-black border-t border-rose-100 dark:border-rose-900/20 pt-0.5">{language === 'bn' ? `ব্যবধান: ${toBengaliDigits(safeDeduction.toFixed(1))} কেজি` : `Difference: ${safeDeduction.toFixed(1)} KG`}</div>
                           </div>
                         )}
                       </td>
                       <td className="px-3 py-3 font-bold text-green-700 whitespace-nowrap">
-                        <div>{monCount} M {extraKg} KG</div>
-                        {calc.isMinusCalculated && (
+                        <div>{disp.monDisplay}</div>
+                        {disp.hasMinus && (
                           <div className="text-[9px] text-slate-400 font-bold">
                             {language === 'bn' ? 'নিট রূপান্তরিত' : 'Net Converted'}
                           </div>
                         )}
                       </td>
                       <td className="px-3 py-3 text-slate-500 font-bold whitespace-nowrap">
-                        <div>৳{calc.ratePerMon}</div>
+                        <div>{disp.rateDisplay}</div>
                         {calc.isMinusCalculated && calc.targetMonPrice !== undefined && (
                           <div className="text-[9px] text-emerald-600 font-extrabold">
                             Target: ৳{calc.targetMonPrice}
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 font-black text-slate-900">৳{Math.round(calc.totalPrice).toLocaleString()}</td>
+                      <td className="px-4 py-3 font-black text-slate-900">{disp.totalPriceDisplay}</td>
                       <td className="px-3 py-3">
                         <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                          {calc.createdBy || 'Guest'}
+                          {disp.operatorDisplay}
                         </span>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1">
                           <button 
+                            onClick={() => setViewingCalc(calc)}
+                            className="text-slate-400 hover:text-indigo-600 p-1.5 rounded hover:bg-indigo-50/80 transition-all cursor-pointer"
+                            title={language === 'bn' ? 'সম্পূর্ণ হিসাব যাচাই করুন' : 'Inspect calculation body'}
+                          >
+                            <Eye size={13} />
+                          </button>
+                          <button 
                             onClick={() => setEditingCalc(calc)}
-                            className="text-slate-400 hover:text-blue-600 p-1.5 rounded hover:bg-slate-100/80 transition-all"
+                            className="text-slate-400 hover:text-blue-600 p-1.5 rounded hover:bg-slate-100/80 transition-all cursor-pointer"
                             title={language === 'bn' ? 'সম্পাদনা করুন' : 'Edit record'}
                           >
                             <Edit size={13} />
                           </button>
                           <button 
                             onClick={() => onDelete(calc.id)} 
-                            className="text-red-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50/80 transition-all"
+                            className="text-red-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50/80 transition-all cursor-pointer"
                             title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete record'}
                           >
                             <Trash2 size={13} />
@@ -7716,8 +8008,11 @@ function HistorySection({
                   </label>
                   <input 
                     type="number" 
-                    value={editingCalc.totalKg}
-                    onChange={e => setEditingCalc({ ...editingCalc, totalKg: parseFloat(e.target.value) || 0 })}
+                    value={editingCalc.totalKg !== undefined ? editingCalc.totalKg : ((editingCalc as any).weightKg !== undefined ? (editingCalc as any).weightKg : '')}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value) || 0;
+                      setEditingCalc({ ...editingCalc, totalKg: v, weightKg: v });
+                    }}
                     className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
                   />
                 </div>
@@ -7727,8 +8022,11 @@ function HistorySection({
                   </label>
                   <input 
                     type="number" 
-                    value={editingCalc.ratePerMon}
-                    onChange={e => setEditingCalc({ ...editingCalc, ratePerMon: parseFloat(e.target.value) || 0 })}
+                    value={editingCalc.ratePerMon !== undefined ? editingCalc.ratePerMon : ((editingCalc as any).rate !== undefined ? (editingCalc as any).rate : '')}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value) || 0;
+                      setEditingCalc({ ...editingCalc, ratePerMon: v, rate: v });
+                    }}
                     className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-yellow-400"
                   />
                 </div>
@@ -7871,11 +8169,15 @@ function HistorySection({
                     return;
                   }
 
-                  const mType = editingCalc.monType || 40;
-                  const kg = editingCalc.totalKg || 0;
-                  const rate = editingCalc.ratePerMon || 0;
+                  const mType = (editingCalc.monType && editingCalc.monType > 0) ? editingCalc.monType : 41;
+                  const kg = typeof editingCalc.totalKg === 'number' && !isNaN(editingCalc.totalKg)
+                    ? editingCalc.totalKg
+                    : (typeof (editingCalc as any).weightKg === 'number' ? (editingCalc as any).weightKg : 0);
+                  const rate = typeof editingCalc.ratePerMon === 'number' && !isNaN(editingCalc.ratePerMon)
+                    ? editingCalc.ratePerMon
+                    : (typeof (editingCalc as any).rate === 'number' ? (editingCalc as any).rate : 0);
                   
-                  let totalMon = kg / mType;
+                  let totalMon = mType > 0 ? kg / mType : 0;
                   let totalPrice = totalMon * rate;
 
                   if (editingCalc.isMinusCalculated) {
@@ -7900,21 +8202,39 @@ function HistorySection({
                       }
                     }
 
-                    totalMon = netWeight / mType;
+                    totalMon = mType > 0 ? netWeight / mType : 0;
                     totalPrice = totalMon * rate;
+                    const monCount = mType > 0 ? Math.floor(netWeight / mType) : 0;
+                    const extraKg = mType > 0 ? parseFloat((netWeight % mType).toFixed(2)) : 0;
 
                     onEdit({
                       ...editingCalc,
+                      totalKg: kg,
+                      weightKg: kg,
+                      ratePerMon: rate,
+                      rate: rate,
+                      monType: mType as MonType,
                       totalMon,
                       totalPrice,
+                      totalAmount: totalPrice,
+                      monDetails: `${monCount} M ${extraKg} KG`,
                       deductedWeight,
                       deductionPercentage
                     });
                   } else {
+                    const monCount = mType > 0 ? Math.floor(kg / mType) : 0;
+                    const extraKg = mType > 0 ? parseFloat((kg % mType).toFixed(2)) : 0;
                     onEdit({
                       ...editingCalc,
+                      totalKg: kg,
+                      weightKg: kg,
+                      ratePerMon: rate,
+                      rate: rate,
+                      monType: mType as MonType,
                       totalMon,
-                      totalPrice
+                      totalPrice,
+                      totalAmount: totalPrice,
+                      monDetails: `${monCount} M ${extraKg} KG`
                     });
                   }
                   setEditingCalc(null);
@@ -7927,11 +8247,20 @@ function HistorySection({
           </div>
         </div>
       )}
+      {/* Calculation Body Inspection & Audit Verification Modal */}
+      {viewingCalc && (
+        <CalculationInspectionModal
+          calc={viewingCalc}
+          onClose={() => setViewingCalc(null)}
+          onEdit={setEditingCalc}
+          onOpenMemo={() => {}}
+          language={language}
+          toBengaliDigits={toBengaliDigits}
+        />
+      )}
     </div>
   );
 }
-
-// --- Note Section ---
 
 function NoteSection({ notes, onAdd, onDelete, t }: { notes: Note[], onAdd: (n: Omit<Note, 'id'>) => void, onDelete: (id: string) => void, t: any }) {
   const [note, setNote] = useState({ title: '', content: '' });
